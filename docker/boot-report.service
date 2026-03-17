@@ -1,0 +1,16 @@
+[Unit]
+Description=Boot Report - Send service status to management server
+After=network-online.target main_ctl.service cv2_ffmpeg.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+WorkingDirectory=/home/admin/gunpo/docker
+ExecStart=/home/admin/gunpo/venv/bin/python3 /home/admin/gunpo/docker/boot_report.py
+StandardOutput=append:/home/admin/gunpo/docker/logs/boot_report.log
+StandardError=append:/home/admin/gunpo/docker/logs/boot_report.log
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
