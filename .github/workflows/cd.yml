@@ -64,9 +64,62 @@ jobs:
     runs-on: [self-hosted, pi-deploy]
     if: always()
     continue-on-error: true
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy
+      - name: Deploy to all Pi
+        env:
+          PI_PASS: admin
         run: |
-          bash deploy_phase5.sh 2>&1 || bash deploy_from_local.sh 2>&1 || echo "로컬 Pi 배포 runner 없음 - 수동 배포 필요"
+          HOSTS="10.209.15.58 10.248.121.141 10.16.180.199 10.135.235.129 10.175.183.222 10.237.252.167 10.135.26.19 10.183.203.184 10.223.71.219 10.37.199.138 10.228.31.17 10.206.68.246 10.47.108.150 10.185.74.120 10.146.15.206 10.137.225.187 10.72.219.36 10.248.147.144 10.47.237.69 10.207.180.137 10.203.78.114 10.80.110.233 10.232.193.180 10.143.174.196 10.94.103.151"
+
+          export SSH_ASKPASS_REQUIRE=force
+          export SSH_ASKPASS=$(mktemp)
+          echo '#!/bin/bash' > "$SSH_ASKPASS"
+          echo "echo $PI_PASS" >> "$SSH_ASKPASS"
+          chmod +x "$SSH_ASKPASS"
+
+          SUCCESS=0
+          FAIL=0
+
+          for ip in $HOSTS; do
+            result=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 admin@192.168.10.107 "
+              export SSH_ASKPASS_REQUIRE=force
+              export SSH_ASKPASS=\$(mktemp)
+              echo '#!/bin/bash' > \"\$SSH_ASKPASS\"
+              echo 'echo ${PI_PASS}' >> \"\$SSH_ASKPASS\"
+              chmod +x \"\$SSH_ASKPASS\"
+              ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 admin@${ip} '
+                HN=\$(hostname)
+                cd /home/admin/gunpo
+                git fetch origin prod 2>&1 | tail -1
+                git checkout prod 2>/dev/null
+                git reset --hard origin/prod 2>&1 | tail -1
+                COMMIT=\$(git log --oneline -1 | cut -c1-7)
+                sudo systemctl restart main_ctl
+                sleep 3
+                STATUS=\$(systemctl is-active main_ctl)
+                echo \"\$HN|\$COMMIT|\$STATUS\"
+              ' 2>/dev/null || echo \"FAIL|${ip}|timeout\"
+              rm -f \"\$SSH_ASKPASS\"
+            " 2>/dev/null)
+
+            if echo "$result" | grep -q "|active"; then
+              SUCCESS=$((SUCCESS + 1))
+              echo "[OK] $result"
+            else
+              FAIL=$((FAIL + 1))
+              echo "[FAIL] $ip - $result"
+            fi
+          done
+
+          rm -f "$SSH_ASKPASS"
+          echo ""
+          echo "결과: SUCCESS=$SUCCESS FAIL=$FAIL TOTAL=$((SUCCESS + FAIL))"
+
+          if [ $FAIL -gt 0 ]; then
+            echo "::warning::${FAIL}대 배포 실패"
+          fi
