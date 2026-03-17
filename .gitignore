@@ -1,19 +1,10 @@
-# 로그 파일
 *.log
-install/cron.log
-install/git_pull.log
-docker/logs/
-
-# 백업 파일
-*.bak.*
-
-# 런타임 상태 파일
-docker/run/
-
-# Python cache
-__pycache__/
 *.pyc
-
-# 데이터/모델 파일
+__pycache__/
+*.bak.*
+docker/run/
+docker/logs/
 data/
 *.pt
+venv/
+node_modules/

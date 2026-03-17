@@ -1,0 +1,111 @@
+name: CI - Syntax & Lint Check
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+jobs:
+  syntax-check:
+    name: Python Syntax Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Compile check all .py files
+        run: |
+          echo "=== py_compile syntax check ==="
+          ERRORS=0
+          while IFS= read -r pyfile; do
+            if ! python -m py_compile "$pyfile" 2>&1; then
+              echo "FAIL: $pyfile"
+              ERRORS=$((ERRORS + 1))
+            else
+              echo "OK:   $pyfile"
+            fi
+          done < <(find . -name '*.py' -not -path './.git/*' -not -path './venv/*')
+
+          echo ""
+          echo "=== Results ==="
+          TOTAL=$(find . -name '*.py' -not -path './.git/*' -not -path './venv/*' | wc -l)
+          echo "Total: $TOTAL, Errors: $ERRORS"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "Syntax check failed."
+            exit 1
+          fi
+          echo "All files passed syntax check."
+
+      - name: Import validation
+        run: |
+          echo "=== Import validation ==="
+          ERRORS=0
+          while IFS= read -r pyfile; do
+            # Extract import lines and try to parse them
+            if ! python -c "
+          import ast, sys
+          try:
+              with open('$pyfile', 'r', encoding='utf-8', errors='ignore') as f:
+                  tree = ast.parse(f.read(), filename='$pyfile')
+              imports = [node for node in ast.walk(tree)
+                         if isinstance(node, (ast.Import, ast.ImportFrom))]
+              print(f'OK:   $pyfile ({len(imports)} imports)')
+          except SyntaxError as e:
+              print(f'FAIL: $pyfile - {e}')
+              sys.exit(1)
+          " 2>&1; then
+              ERRORS=$((ERRORS + 1))
+            fi
+          done < <(find . -name '*.py' -not -path './.git/*' -not -path './venv/*')
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "Import validation failed."
+            exit 1
+          fi
+          echo "All imports parsed successfully."
+
+  lint-check:
+    name: Lint Check (Advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Run flake8 (non-blocking)
+        run: |
+          echo "=== flake8 lint check (advisory) ==="
+          flake8 . \
+            --count \
+            --select=E9,F63,F7,F82 \
+            --show-source \
+            --statistics \
+            --exclude=.git,venv,__pycache__ \
+            || true
+
+          echo ""
+          echo "=== Full lint report ==="
+          flake8 . \
+            --count \
+            --max-complexity=15 \
+            --max-line-length=120 \
+            --statistics \
+            --exclude=.git,venv,__pycache__ \
+            || true

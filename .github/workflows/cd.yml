@@ -1,0 +1,93 @@
+name: CD - Release & Package
+
+on:
+  push:
+    branches: [prod]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate version tag
+        id: version
+        run: |
+          # Format: v{YYYY}.{MM}.{DD}.{run_number}
+          VERSION="v$(date +'%Y.%m.%d').${{ github.run_number }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Generated version: $VERSION"
+
+      - name: Get commit summary
+        id: summary
+        run: |
+          # Collect recent commit messages since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            CHANGES=$(git log "$LAST_TAG"..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          else
+            CHANGES=$(git log --pretty=format:"- %s (%h)" --no-merges -20)
+          fi
+
+          # Write to file to preserve newlines
+          echo "$CHANGES" > /tmp/changes.txt
+          echo "Generated changelog with $(echo "$CHANGES" | wc -l) entries"
+
+      - name: Package deployment artifact
+        run: |
+          mkdir -p release
+          # Package only the files needed on the Pi devices
+          tar czf "release/spms-pi-${{ steps.version.outputs.version }}.tar.gz" \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='release' \
+            --exclude='venv' \
+            --exclude='__pycache__' \
+            --exclude='*.tar.gz' \
+            --exclude='deploy_from_local.sh' \
+            --exclude='check_all*.sh' \
+            --exclude='remote.sh' \
+            --exclude='sshpass.sh' \
+            .
+
+          echo "=== Artifact contents ==="
+          tar tzf "release/spms-pi-${{ steps.version.outputs.version }}.tar.gz"
+          echo ""
+          ls -lh "release/spms-pi-${{ steps.version.outputs.version }}.tar.gz"
+
+      - name: Create Git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body_path: /tmp/changes.txt
+          files: release/spms-pi-${{ steps.version.outputs.version }}.tar.gz
+          draft: false
+          prerelease: false
+
+      - name: Summary
+        run: |
+          echo "## Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "Deploy to Pi devices from a local machine with network access:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "bash deploy_from_local.sh" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
