@@ -1,0 +1,16 @@
+[Unit]
+Description=Gunpo WAN/IP Network Watchdog
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/gunpo/docker
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/admin/gunpo/venv/bin/python3 /home/admin/gunpo/docker/network_watchdog.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
