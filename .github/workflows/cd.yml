@@ -6,120 +6,30 @@ on:
     paths:
       - 'docker/**'
       - '.github/workflows/cd.yml'
-
   workflow_dispatch:
-    inputs:
-      targets:
-        description: '배포 대상 (all 또는 쉼표 구분 IP)'
-        required: false
-        default: 'all'
 
 permissions:
   contents: write
 
 jobs:
   # ─────────────────────────────────────────────
-  # 릴리스 태그 + 아티팩트 생성
-  # ─────────────────────────────────────────────
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Generate version
-        id: version
-        run: |
-          VERSION="v$(date +'%Y.%m.%d').${{ github.run_number }}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Create tag & release
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}" 2>/dev/null || true
-          git push origin "${{ steps.version.outputs.version }}" 2>/dev/null || true
-
-      - name: Summary
-        run: |
-          echo "## Release ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Pi 배포를 실행하세요:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "cd D:/home/spms-pi && bash deploy_phase5.sh" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "또는 자동 배포 데몬이 실행 중이면 자동으로 배포됩니다." >> $GITHUB_STEP_SUMMARY
-
-  # ─────────────────────────────────────────────
-  # Pi 배포 (로컬 runner가 있을 때만 실행)
+  # Pi Runner에서 자체 배포 (git pull + restart)
+  # 각 Pi에 설치된 runner가 자기 자신을 업데이트
   # ─────────────────────────────────────────────
   deploy:
-    name: Deploy to Pi Devices
-    needs: release
-    runs-on: [self-hosted, pi-deploy]
-    if: always()
-    continue-on-error: true
-    defaults:
-      run:
-        shell: bash
+    name: "Self-Deploy"
+    runs-on: [self-hosted, pi]
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy to all Pi
-        env:
-          PI_PASS: admin
+      - name: Pull & Restart
         run: |
-          HOSTS="10.209.15.58 10.248.121.141 10.16.180.199 10.135.235.129 10.175.183.222 10.237.252.167 10.135.26.19 10.183.203.184 10.223.71.219 10.37.199.138 10.228.31.17 10.206.68.246 10.47.108.150 10.185.74.120 10.146.15.206 10.137.225.187 10.72.219.36 10.248.147.144 10.47.237.69 10.207.180.137 10.203.78.114 10.80.110.233 10.232.193.180 10.143.174.196 10.94.103.151"
-
-          export SSH_ASKPASS_REQUIRE=force
-          export SSH_ASKPASS=$(mktemp)
-          echo '#!/bin/bash' > "$SSH_ASKPASS"
-          echo "echo $PI_PASS" >> "$SSH_ASKPASS"
-          chmod +x "$SSH_ASKPASS"
-
-          SUCCESS=0
-          FAIL=0
-
-          for ip in $HOSTS; do
-            result=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 admin@192.168.10.107 "
-              export SSH_ASKPASS_REQUIRE=force
-              export SSH_ASKPASS=\$(mktemp)
-              echo '#!/bin/bash' > \"\$SSH_ASKPASS\"
-              echo 'echo ${PI_PASS}' >> \"\$SSH_ASKPASS\"
-              chmod +x \"\$SSH_ASKPASS\"
-              ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 admin@${ip} '
-                HN=\$(hostname)
-                cd /home/admin/gunpo
-                git fetch origin prod 2>&1 | tail -1
-                git checkout prod 2>/dev/null
-                git reset --hard origin/prod 2>&1 | tail -1
-                COMMIT=\$(git log --oneline -1 | cut -c1-7)
-                sudo systemctl restart main_ctl
-                sleep 3
-                STATUS=\$(systemctl is-active main_ctl)
-                echo \"\$HN|\$COMMIT|\$STATUS\"
-              ' 2>/dev/null || echo \"FAIL|${ip}|timeout\"
-              rm -f \"\$SSH_ASKPASS\"
-            " 2>/dev/null)
-
-            if echo "$result" | grep -q "|active"; then
-              SUCCESS=$((SUCCESS + 1))
-              echo "[OK] $result"
-            else
-              FAIL=$((FAIL + 1))
-              echo "[FAIL] $ip - $result"
-            fi
-          done
-
-          rm -f "$SSH_ASKPASS"
-          echo ""
-          echo "결과: SUCCESS=$SUCCESS FAIL=$FAIL TOTAL=$((SUCCESS + FAIL))"
-
-          if [ $FAIL -gt 0 ]; then
-            echo "::warning::${FAIL}대 배포 실패"
-          fi
+          echo "=== $(hostname) ==="
+          cd /home/admin/gunpo
+          git fetch origin prod 2>&1 | tail -3
+          git checkout prod 2>/dev/null
+          git reset --hard origin/prod
+          echo "Commit: $(git log --oneline -1)"
+          sudo systemctl restart main_ctl
+          sleep 3
+          echo "main_ctl: $(systemctl is-active main_ctl)"
+          echo "cv2_ffmpeg: $(systemctl is-active cv2_ffmpeg)"
+          echo "=== DONE ==="
