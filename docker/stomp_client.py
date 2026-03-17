@@ -172,6 +172,54 @@ async def get_hdmi_status():
         logging.error(f"get_hdmi_status: 전원상태 확인 실패: {e}")
         return "ERROR"
 
+# 서비스 상태 조회
+def get_service_status(service_name):
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", service_name],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "unknown"
+
+def get_git_version():
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd="/home/admin/gunpo"
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
+def get_uptime_seconds():
+    try:
+        import time
+        return int(time.time() - psutil.boot_time())
+    except Exception:
+        return 0
+
+def get_last_detection_info():
+    try:
+        log_path = "/home/admin/gunpo/docker/logs/cv2_ffmpeg.log"
+        result = subprocess.run(
+            ["tail", "-100", log_path],
+            capture_output=True, text=True, timeout=5
+        )
+        import re as _re
+        lines = result.stdout.strip().split("\n")
+        for line in reversed(lines):
+            m = _re.search(r"감지된 인원 수: (\d+)", line)
+            if m:
+                count = int(m.group(1))
+                ts = line[:19] if len(line) >= 19 else ""
+                return count, ts
+    except Exception:
+        pass
+    return 0, ""
+
 # 시스템정보수집
 async def collect_system_info():
     cpu_usage = psutil.cpu_percent(interval=1)
@@ -188,6 +236,14 @@ async def collect_system_info():
     fan_info = await get_fan_info()  # `await` 추가
     light_info = await get_light_info()  # `await` 추가
     hdmi_status = await get_hdmi_status()
+
+    # Phase 5: 서비스 상태 필드
+    main_ctl_status = await asyncio.to_thread(get_service_status, "main_ctl")
+    cv2_ffmpeg_status = await asyncio.to_thread(get_service_status, "cv2_ffmpeg")
+    git_version = await asyncio.to_thread(get_git_version)
+    import time
+    uptime_seconds = int(time.time() - psutil.boot_time())
+    detection_count, detection_time = await asyncio.to_thread(get_last_detection_info)
     # CPU 온도 수집
     try:
         with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
@@ -221,6 +277,13 @@ async def collect_system_info():
         "network_outbound": "ON" if network_status.outbound_ok else "OFF",
         "network_health": "ON" if network_status.healthy else "OFF",
         "network_check_required": "Y" if not network_status.healthy else "N",
+        "main_ctl_status": main_ctl_status,
+        "cv2_ffmpeg_status": cv2_ffmpeg_status,
+        "git_version": git_version,
+        "uptime_seconds": uptime_seconds,
+        "last_detection_count": detection_count,
+        "last_detection_time": detection_time,
+        "stomp_connected": "true",
     }
     data.update(build_runtime_fields(network_status, include_pending_events=True))
     return data
