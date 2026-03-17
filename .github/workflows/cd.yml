@@ -1,93 +1,72 @@
-name: CD - Release & Package
+name: CD - Pi Deploy
 
 on:
   push:
     branches: [prod]
+    paths:
+      - 'docker/**'
+      - '.github/workflows/cd.yml'
+
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: '배포 대상 (all 또는 쉼표 구분 IP)'
+        required: false
+        default: 'all'
 
 permissions:
   contents: write
 
 jobs:
+  # ─────────────────────────────────────────────
+  # 릴리스 태그 + 아티팩트 생성
+  # ─────────────────────────────────────────────
   release:
     name: Create Release
     runs-on: ubuntu-latest
-
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Generate version tag
+      - name: Generate version
         id: version
         run: |
-          # Format: v{YYYY}.{MM}.{DD}.{run_number}
           VERSION="v$(date +'%Y.%m.%d').${{ github.run_number }}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Generated version: $VERSION"
 
-      - name: Get commit summary
-        id: summary
-        run: |
-          # Collect recent commit messages since last tag
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$LAST_TAG" ]; then
-            CHANGES=$(git log "$LAST_TAG"..HEAD --pretty=format:"- %s (%h)" --no-merges)
-          else
-            CHANGES=$(git log --pretty=format:"- %s (%h)" --no-merges -20)
-          fi
-
-          # Write to file to preserve newlines
-          echo "$CHANGES" > /tmp/changes.txt
-          echo "Generated changelog with $(echo "$CHANGES" | wc -l) entries"
-
-      - name: Package deployment artifact
-        run: |
-          mkdir -p release
-          # Package only the files needed on the Pi devices
-          tar czf "release/spms-pi-${{ steps.version.outputs.version }}.tar.gz" \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='release' \
-            --exclude='venv' \
-            --exclude='__pycache__' \
-            --exclude='*.tar.gz' \
-            --exclude='deploy_from_local.sh' \
-            --exclude='check_all*.sh' \
-            --exclude='remote.sh' \
-            --exclude='sshpass.sh' \
-            .
-
-          echo "=== Artifact contents ==="
-          tar tzf "release/spms-pi-${{ steps.version.outputs.version }}.tar.gz"
-          echo ""
-          ls -lh "release/spms-pi-${{ steps.version.outputs.version }}.tar.gz"
-
-      - name: Create Git tag
+      - name: Create tag & release
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}"
-          git push origin "${{ steps.version.outputs.version }}"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: Release ${{ steps.version.outputs.version }}
-          body_path: /tmp/changes.txt
-          files: release/spms-pi-${{ steps.version.outputs.version }}.tar.gz
-          draft: false
-          prerelease: false
+          git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}" 2>/dev/null || true
+          git push origin "${{ steps.version.outputs.version }}" 2>/dev/null || true
 
       - name: Summary
         run: |
-          echo "## Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "## Release ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "Deploy to Pi devices from a local machine with network access:" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "bash deploy_from_local.sh" >> $GITHUB_STEP_SUMMARY
+          echo "Pi 배포를 실행하세요:" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "cd D:/home/spms-pi && bash deploy_phase5.sh" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "또는 자동 배포 데몬이 실행 중이면 자동으로 배포됩니다." >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────
+  # Pi 배포 (로컬 runner가 있을 때만 실행)
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Pi Devices
+    needs: release
+    runs-on: [self-hosted, pi-deploy]
+    if: always()
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy
+        run: |
+          bash deploy_phase5.sh 2>&1 || bash deploy_from_local.sh 2>&1 || echo "로컬 Pi 배포 runner 없음 - 수동 배포 필요"
