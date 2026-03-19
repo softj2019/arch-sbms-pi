@@ -868,22 +868,22 @@ def update_count():
 
         # 인원수가 0보다 큰 경우 메시지 전송
         if detected_people_count > 0:
-            # "승차대기" 메시지 전송
-            raw_display_message = config_cache.get("ledMessage")
-            display_message = get_decoded_message(raw_display_message)
-            display_color = config_cache.get("ledFontColor", "00")
-            message = display_message
-
-            color = display_color or '00'
-            font = '00'
-            weight = '01'
-            eff = '090009000900'
-            ysz = '2'
-            fix = 1
-            dly_interval = 60000
-            start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, 7)
-
             if cv_count_screen_action == 0:
+                # "승차대기" 메시지 전송 (최초 감지시에만)
+                raw_display_message = config_cache.get("ledMessage")
+                display_message = get_decoded_message(raw_display_message)
+                display_color = config_cache.get("ledFontColor", "00")
+                message = display_message
+
+                color = display_color or '00'
+                font = '00'
+                weight = '01'
+                eff = '090009000900'
+                ysz = '2'
+                fix = 1
+                dly_interval = 60000
+                start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, 20)
+
                 # 재실인원 최초 감지시에만 모터 STOP 전송
                 activate_command("STOP", 0.1)
 
@@ -895,17 +895,24 @@ def update_count():
                 asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
                 logging.info("STOP message sent to STOMP server.")
             else:
-                logging.info("update_count: STOP already broadcast, skip duplicate STOP publish.")
+                # cv_count_screen_action==1: 재실감지 유지 중 - 승차대기 유지, 아무것도 안 함
+                logging.info("update_count: people detected, waiting message already displayed. skip.")
 
         else:
 
             if cv_count_screen_action == 1:
+                cv_count_screen_action = 0
+                logging.info("update_count: people count cleared, resetting screen action and displaying clock.")
+
+                # 시계 메시지 즉시 표시
+                display_thread = threading.Thread(target=display_default_message, daemon=True)
+                display_thread.start()
+
                 stop_message = json.dumps({
                     "action": last_screen_action or "STOP",
                     "terminalId": TERMINAL_ID
                 })
                 asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
-                cv_count_screen_action = 0
                 logging.info("update_count: people count cleared, reset screen action broadcast state.")
 
         return jsonify({"status": "success", "message": "Count updated"}), 200
