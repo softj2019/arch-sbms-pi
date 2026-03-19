@@ -984,13 +984,24 @@ def start_message_with_timeout(message, color="00", font="00", weight="01", eff=
             elapsed = (datetime.now() - start_time).total_seconds()
             if elapsed > duration:
                 message_thread_stop.set()
-                logging.info(f"start_message_with_timeout: 메시지 유지시간 초과됨, 다시 전송 중: '{message}'")
+                logging.info(f"start_message_with_timeout: 메시지 유지시간 초과됨: '{message}'")
 
-                # display_default_message() 실행
-                global display_thread
-                display_thread = threading.Thread(target=display_default_message, daemon=True)
-                display_thread.start()
-                break
+                # cv_count_screen_action 상태 확인
+                if cv_count_screen_action == 1:
+                    # 재실인원 유지 중 - 승차대기 다시 전송
+                    logging.info(f"start_message_with_timeout: 재실감지 유지 중, 승차대기 재전송: '{message}'")
+                    new_command = encode_to_protocol(message, "", color, font, weight, eff, ysz, fix, dly_interval)
+                    send_command(new_command)
+                    # 새 스레드로 다시 대기
+                    message_thread_stop.clear()
+                    threading.Thread(target=message_worker, daemon=True).start()
+                    return
+                else:
+                    # 인원 0 - 시계 표시
+                    global display_thread
+                    display_thread = threading.Thread(target=display_default_message, daemon=True)
+                    display_thread.start()
+                    break
 
             time.sleep(1)
 
