@@ -930,40 +930,33 @@ async def send_stomp_message(destination, message, url):
 def display_default_message():
     dly_interval = 60
     global emergency_message_status
+    last_sent_minute = None
 
     try:
-        next_minute = datetime.now().replace(second=0, microsecond=0) + timedelta(minutes=1)
         while not stop_event.is_set():
-
             now = datetime.now()
-            next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+            current_minute = now.minute
 
-            # 현재 시간 표시 (초기 메시지 생성)
-            hour = now.strftime("%H")
-            minute = now.strftime("%M")
-            h1, h2 = hour[0], hour[1]
-            m1, m2 = minute[0], minute[1]
+            if current_minute != last_sent_minute:
+                next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
 
-            # 기본 메시지 생성
-            default_message = (
-                f"RST=1,LNE=1,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h2}·{m2} ,"
-                f"RST=1,LNE=2,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h1}·{m1} "
-            )
-            logging.info(f"display_default_message: 메시지 갱신: {hour}:{minute}")
-            command = encode_to_protocol("", default_message)
-            send_command(command)
-            # 정확한 1초 간격 유지
-            while not stop_event.is_set():
-                now = datetime.now()
-                remaining_time = (next_minute - now).total_seconds()
+                hour = now.strftime("%H")
+                minute = now.strftime("%M")
+                h1, h2 = hour[0], hour[1]
+                m1, m2 = minute[0], minute[1]
 
-                if remaining_time <= 0:
-                    next_minute += timedelta(minutes=1)  # 다음 기준점 설정
-                    break
+                default_message = (
+                    f"RST=1,LNE=1,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h2}·{m2} ,"
+                    f"RST=1,LNE=2,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h1}·{m1} "
+                )
+                logging.info(f"display_default_message: 메시지 갱신: {hour}:{minute}")
+                command = encode_to_protocol("", default_message)
+                send_command(command)
+                last_sent_minute = current_minute
 
-                # 긴급 메시지가 감지되면 즉시 종료
-                if stop_event.wait(timeout=1):
-                    return
+            remaining = (next_minute - datetime.now()).total_seconds() if last_sent_minute == current_minute else 60
+            if stop_event.wait(timeout=min(remaining, 1)):
+                return
 
     except Exception as e:
         logging.error(f"Error displaying default message: {e}")
