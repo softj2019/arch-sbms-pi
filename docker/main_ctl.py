@@ -151,6 +151,34 @@ config_cache.update({
 })
 config_lock = threading.Lock()
 
+
+def stop_default_display():
+    """Stop the clock thread so waiting messages are not overwritten."""
+    global display_thread
+
+    stop_event.set()
+    if (
+        display_thread
+        and display_thread.is_alive()
+        and threading.current_thread() is not display_thread
+    ):
+        display_thread.join(timeout=2)
+
+    if display_thread and not display_thread.is_alive():
+        display_thread = None
+
+
+def ensure_default_display_running():
+    """Start the clock thread only when it is not already running."""
+    global display_thread
+
+    stop_event.clear()
+    if display_thread and display_thread.is_alive():
+        return
+
+    display_thread = threading.Thread(target=display_default_message, daemon=True)
+    display_thread.start()
+
 # tapo 제어
 async def set_tapo_power_if_needed(ip, turn_on: bool, device_name: str = "Tapo"):
     try:
@@ -855,7 +883,7 @@ def execute():
 # openCV 에서 전송된 인원수를 처리하고, 필요 시 led 전광판에 메시지 전송
 @app.route('/update_count', methods=['POST'])
 def update_count():
-    global emergency_message_status, detected_people_count, cv_count_screen_action, last_screen_action, display_thread, config_cache
+    global emergency_message_status, detected_people_count, cv_count_screen_action, last_screen_action, config_cache
 
     if emergency_message_status == 1:
         logging.info("[update_count] Emergency mode activated. Stopping...")
@@ -868,22 +896,23 @@ def update_count():
 
         # 인원수가 0보다 큰 경우 메시지 전송
         if detected_people_count > 0:
-            # "승차대기" 메시지 전송
-            raw_display_message = config_cache.get("ledMessage")
-            display_message = get_decoded_message(raw_display_message)
-            display_color = config_cache.get("ledFontColor", "00")
-            message = display_message
-
-            color = display_color or '00'
-            font = '00'
-            weight = '01'
-            eff = '090009000900'
-            ysz = '2'
-            fix = 1
-            dly_interval = 60000
-            start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, 7)
-
             if cv_count_screen_action == 0:
+                stop_default_display()
+                # "승차대기" 메시지 전송 (최초 감지시에만)
+                raw_display_message = config_cache.get("ledMessage")
+                display_message = get_decoded_message(raw_display_message)
+                display_color = config_cache.get("ledFontColor", "00")
+                message = display_message
+
+                color = display_color or '00'
+                font = '00'
+                weight = '01'
+                eff = '090009000900'
+                ysz = '2'
+                fix = 1
+                dly_interval = 60000
+                start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, 20)
+
                 # 재실인원 최초 감지시에만 모터 STOP 전송
                 activate_command("STOP", 0.1)
 
@@ -895,17 +924,24 @@ def update_count():
                 asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
                 logging.info("STOP message sent to STOMP server.")
             else:
-                logging.info("update_count: STOP already broadcast, skip duplicate STOP publish.")
+                # cv_count_screen_action==1: 재실감지 유지 중 - 승차대기 유지, 아무것도 안 함
+                logging.info("update_count: people detected, waiting message already displayed. skip.")
 
         else:
 
             if cv_count_screen_action == 1:
+                message_thread_stop.set()
+                cv_count_screen_action = 0
+                logging.info("update_count: people count cleared, resetting screen action and displaying clock.")
+
+                # 시계 메시지 즉시 표시
+                ensure_default_display_running()
+
                 stop_message = json.dumps({
                     "action": last_screen_action or "STOP",
                     "terminalId": TERMINAL_ID
                 })
                 asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
-                cv_count_screen_action = 0
                 logging.info("update_count: people count cleared, reset screen action broadcast state.")
 
         return jsonify({"status": "success", "message": "Count updated"}), 200
@@ -976,14 +1012,21 @@ def start_message_with_timeout(message, color="00", font="00", weight="01", eff=
         while not message_thread_stop.is_set():
             elapsed = (datetime.now() - start_time).total_seconds()
             if elapsed > duration:
-                message_thread_stop.set()
-                logging.info(f"start_message_with_timeout: 메시지 유지시간 초과됨, 다시 전송 중: '{message}'")
+                logging.info(f"start_message_with_timeout: 메시지 유지시간 초과됨: '{message}'")
 
-                # display_default_message() 실행
-                global display_thread
-                display_thread = threading.Thread(target=display_default_message, daemon=True)
-                display_thread.start()
-                break
+                # cv_count_screen_action 상태 확인
+                if cv_count_screen_action == 1:
+                    # 재실인원 유지 중 - 승차대기 다시 전송
+                    logging.info(f"start_message_with_timeout: 재실감지 유지 중, 승차대기 재전송: '{message}'")
+                    new_command = encode_to_protocol(message, "", color, font, weight, eff, ysz, fix, dly_interval)
+                    send_command(new_command)
+                    # 같은 스레드에서 타이머만 리셋해 재전송한다.
+                    start_time = datetime.now()
+                    continue
+                else:
+                    # 인원 0 - 시계 표시
+                    ensure_default_display_running()
+                    break
 
             time.sleep(1)
 
@@ -1008,8 +1051,7 @@ def restart_display_default_message(duration):
             if elapsed > duration:
                 display_thread_stop.set()
                 logging.info(f"restart_display_default_message: 시간 초과됨, LED 시계 다시 전송 중 ")
-                display_thread = threading.Thread(target=display_default_message, daemon=True)
-                display_thread.start()
+                ensure_default_display_running()
                 start_time = datetime.now()  # 갱신 시점 리셋
             time.sleep(1)
 
@@ -1039,7 +1081,7 @@ def display():
         # 긴급 메시지 활성화 처리
         if emergency_message_status == 1:
             logging.info("[display] 긴급 모드 활성화, 기본 메시지 중단")
-            stop_event.set()  # 기본 메시지 및 인원수 업데이트 중단
+            stop_default_display()  # 기본 메시지 및 인원수 업데이트 중단
 
             message = data.get('message', '') or data.get('sendMessage', '')
             color = data.get('color', '00')
@@ -1062,13 +1104,7 @@ def display():
         # 긴급 메시지 해제
         else:
             logging.info("[display] 긴급 모드 해제, 기본 메시지 다시 시작")
-            stop_event.clear()  # 중단 이벤트 해제
-            # 기존 스레드가 실행 중이면 중복 실행 방지
-            if display_thread and display_thread.is_alive():
-                logging.info("[display] 기존 display_default_message() 스레드가 실행 중이므로 새로 실행하지 않음")
-            else:
-                display_thread = threading.Thread(target=display_default_message, daemon=True)
-                display_thread.start()
+            ensure_default_display_running()
             return jsonify({"status": "success", "message": "Emergency mode deactivated"}), 200
 
     except ValueError as ve:
@@ -1179,14 +1215,13 @@ if __name__ == "__main__":
         flask_process = threading.Thread(target=start_flask_app, daemon=True)
         stomp_process = threading.Thread(target=lambda: asyncio.run(start_stomp_clients()), daemon=True)
         stomp_req_client_process = threading.Thread(target=lambda: asyncio.run(start_stomp_req_client()), daemon=True)
-        display_thread = threading.Thread(target=display_default_message, daemon=True)
         thread = threading.Thread(target=start_async_loop, daemon=True)
 
         # 프로세스 시작
         flask_process.start()
         stomp_process.start()
         stomp_req_client_process.start()
-        display_thread.start()
+        ensure_default_display_running()
         thread.start()
         config_fetch_thread.start()
         fan_control_thread.start()
