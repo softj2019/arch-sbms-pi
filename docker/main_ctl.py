@@ -114,6 +114,7 @@ for pin in PINS:
 data_queue = Queue()
 # 인원수 저장 변수
 detected_people_count = 0
+last_people_detected_at = None
 # 재실 감지로 인한 스크린 제어 상태를 STOP 을 제외하고 저장
 last_screen_action = ""
 current_screen_action = "STOP"
@@ -150,6 +151,7 @@ config_cache.update({
     "t1h": "0.0",
 })
 config_lock = threading.Lock()
+PEOPLE_DETECTION_TIMEOUT_SEC = int(os.getenv("PEOPLE_DETECTION_TIMEOUT_SEC", "10"))
 
 
 def stop_default_display():
@@ -178,6 +180,43 @@ def ensure_default_display_running():
 
     display_thread = threading.Thread(target=display_default_message, daemon=True)
     display_thread.start()
+
+
+def clear_waiting_state(reason: str):
+    """Return to the clock when occupancy is no longer considered active."""
+    global cv_count_screen_action, last_people_detected_at
+
+    if cv_count_screen_action != 1:
+        return
+
+    message_thread_stop.set()
+    cv_count_screen_action = 0
+    last_people_detected_at = None
+    logging.info(f"clear_waiting_state: {reason}")
+    ensure_default_display_running()
+
+    stop_message = json.dumps({
+        "action": last_screen_action or "STOP",
+        "terminalId": TERMINAL_ID
+    })
+    asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
+
+
+def people_detection_watchdog():
+    """Fallback to the clock when the camera stops reporting occupancy clears."""
+    global last_people_detected_at
+
+    while True:
+        time.sleep(1)
+
+        if cv_count_screen_action != 1 or last_people_detected_at is None:
+            continue
+
+        elapsed = (datetime.now() - last_people_detected_at).total_seconds()
+        if elapsed > PEOPLE_DETECTION_TIMEOUT_SEC:
+            clear_waiting_state(
+                f"people detection timeout exceeded ({int(elapsed)}s > {PEOPLE_DETECTION_TIMEOUT_SEC}s)"
+            )
 
 # tapo 제어
 async def set_tapo_power_if_needed(ip, turn_on: bool, device_name: str = "Tapo"):
@@ -883,7 +922,7 @@ def execute():
 # openCV 에서 전송된 인원수를 처리하고, 필요 시 led 전광판에 메시지 전송
 @app.route('/update_count', methods=['POST'])
 def update_count():
-    global emergency_message_status, detected_people_count, cv_count_screen_action, last_screen_action, config_cache
+    global emergency_message_status, detected_people_count, cv_count_screen_action, last_screen_action, config_cache, last_people_detected_at
 
     if emergency_message_status == 1:
         logging.info("[update_count] Emergency mode activated. Stopping...")
@@ -896,6 +935,7 @@ def update_count():
 
         # 인원수가 0보다 큰 경우 메시지 전송
         if detected_people_count > 0:
+            last_people_detected_at = datetime.now()
             if cv_count_screen_action == 0:
                 stop_default_display()
                 # "승차대기" 메시지 전송 (최초 감지시에만)
@@ -930,19 +970,7 @@ def update_count():
         else:
 
             if cv_count_screen_action == 1:
-                message_thread_stop.set()
-                cv_count_screen_action = 0
-                logging.info("update_count: people count cleared, resetting screen action and displaying clock.")
-
-                # 시계 메시지 즉시 표시
-                ensure_default_display_running()
-
-                stop_message = json.dumps({
-                    "action": last_screen_action or "STOP",
-                    "terminalId": TERMINAL_ID
-                })
-                asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
-                logging.info("update_count: people count cleared, reset screen action broadcast state.")
+                clear_waiting_state("update_count: people count cleared, resetting screen action and displaying clock.")
 
         return jsonify({"status": "success", "message": "Count updated"}), 200
 
@@ -1210,6 +1238,7 @@ if __name__ == "__main__":
         config_fetch_thread = threading.Thread(target=start_config_fetch_loop, daemon=True)
         fan_control_thread = threading.Thread(target=start_fan_auto_control, daemon=True)
         ws_watchdog = threading.Thread(target=ws_watchdog_thread, daemon=True)
+        people_watchdog = threading.Thread(target=people_detection_watchdog, daemon=True)
 
         # 병렬 프로세스 생성
         flask_process = threading.Thread(target=start_flask_app, daemon=True)
@@ -1226,6 +1255,7 @@ if __name__ == "__main__":
         config_fetch_thread.start()
         fan_control_thread.start()
         ws_watchdog.start()
+        people_watchdog.start()
 
         # 메인 프로세스에서 서브 프로세스 대기
         flask_process.join()
