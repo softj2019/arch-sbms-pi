@@ -69,8 +69,20 @@ if os.name != "nt":
 
 API_URL = os.getenv('API_URL')
 server_url = f"{API_URL}/update_count"
-encoded_password = urllib.parse.quote(PASSWORD_OPENCV)
-rtsp_url = f"rtsp://{USERNAME_OPENCV}:{encoded_password}@{camera_ip}/stream1"
+
+CAMERA_TYPE = os.getenv('CAMERA_TYPE', 'ip')
+STATION_TYPE = os.getenv('STATION_TYPE', '')
+
+if STATION_TYPE == 'smartpole' or CAMERA_TYPE == 'usb':
+    # USB 카메라 → mediamtx RTSP URL 사용
+    rtsp_url = os.getenv('RTSP_STREAM1', 'rtsp://localhost:8554/cam')
+else:
+    # IP 카메라 → USERNAME_OPENCV/PASSWORD_OPENCV/IP_OPENCV 조합 (기본값)
+    encoded_password = urllib.parse.quote(PASSWORD_OPENCV)
+    rtsp_url = f"rtsp://{USERNAME_OPENCV}:{encoded_password}@{camera_ip}/stream1"
+
+safe_url = re.sub(r'(://[^:]+):([^@]+)@', r'\1:***@', rtsp_url)
+logging.info(f"RTSP 연결: {safe_url}")
 
 STAT_FILE_PATH = os.path.join(DATA_DIR, "stat_data.json")
 def save_stat_count(stat_people_count):
