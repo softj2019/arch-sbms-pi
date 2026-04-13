@@ -9,7 +9,6 @@ import json
 import logging
 import requests
 from devices.tapo_on import get_device_info
-import cv2
 import urllib.parse
 
 import subprocess
@@ -46,22 +45,17 @@ else:
 TERMINAL_ID = extracted_number
 API_URL= os.getenv('API_URL')
 
-# RTSP 정보
+# RTSP / 카메라 정보
 username = os.getenv("USERNAME_OPENCV")
 password = os.getenv("PASSWORD_OPENCV")
 camera_ip = os.getenv('IP_OPENCV')
-encoded_password = urllib.parse.quote(password)
-rtsp_url = f"rtsp://{username}:{encoded_password}@{camera_ip}/stream2"
+encoded_password = urllib.parse.quote(password) if password else ""
 ip_address_light = os.getenv("IP_ADDRESS_LED")
 ip_address_fan = os.getenv("IP_ADDRESS_FAN")
 original_str = os.getenv("ORIGINAL_STR")
 
-# RTSP 스트림 연결
-cap = cv2.VideoCapture(rtsp_url)
-if cap.isOpened():
-    cv_power="ON"
-else:
-    cv_power="OFF"
+# cv_power: 기동 시 단 1회 RTSP 연결 시도 대신 cv2_ffmpeg 서비스 상태로 동적 판단
+# (collect_system_info 내에서 cv2_ffmpeg_status 확인 후 덮어씀)
 
 # stomp connect frame 생성
 def create_stomp_connect_frame():
@@ -244,6 +238,9 @@ async def collect_system_info():
     import time
     uptime_seconds = int(time.time() - psutil.boot_time())
     detection_count, detection_time = await asyncio.to_thread(get_last_detection_info)
+
+    # vc_power: cv2_ffmpeg 서비스 기동 여부로 판단 (기동 시 1회 RTSP 체크 방식 폐기)
+    cv_power = "ON" if cv2_ffmpeg_status == "active" else "OFF"
     # CPU 온도 수집
     try:
         with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
