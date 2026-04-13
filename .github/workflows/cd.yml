@@ -12,24 +12,58 @@ permissions:
   contents: write
 
 jobs:
-  # ─────────────────────────────────────────────
-  # Pi Runner에서 자체 배포 (git pull + restart)
-  # 각 Pi에 설치된 runner가 자기 자신을 업데이트
-  # ─────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────
+  # 각 Pi 러너가 자기 자신을 업데이트 (25개 병렬 실행)
+  # ──────────────────────────────────────────────────────────
   deploy:
-    name: "Self-Deploy"
-    runs-on: [self-hosted, pi]
+    name: "Deploy ${{ matrix.station }}"
+    runs-on: [self-hosted, "${{ matrix.station }}"]
+    strategy:
+      fail-fast: false
+      matrix:
+        station:
+          - pi-26019  # 철쭉동산
+          - pi-26023  # 송정마을
+          - pi-26030  # 남천병원
+          - pi-26037  # 문화예술회관
+          - pi-26039  # 문화예술회관
+          - pi-26058  # 13단지아파트입구
+          - pi-26063  # 복합화물터미널후문·가족센터
+          - pi-26073  # 군포국민체육센터
+          - pi-26074  # 군포국민체육센터
+          - pi-26082  # 당동주공아파트
+          - pi-26084  # 당동주공아파트
+          - pi-26176  # 5단지517동앞
+          - pi-26200  # 부곡3단지아파트
+          - pi-26201  # 부곡3단지아파트
+          - pi-26225  # 군포첨단산업단지
+          - pi-26227  # 군포첨단산업단지
+          - pi-26238  # 삼성마을5단지아파트입구
+          - pi-26240  # 신기초등학교정문
+          - pi-26243  # 신기초등학교후문
+          - pi-26249  # 신한애자
+          - pi-26257  # 군포역2번출구
+          - pi-26366  # 산본도서관
+          - pi-26399  # 군포시장
+          - pi-26416  # 송정지구입구
+          - pi-26417  # 송정지구입구
+
     steps:
       - name: Pull & Restart
         run: |
-          echo "=== $(hostname) ==="
+          echo "=== $(hostname) / ${{ matrix.station }} ==="
           cd /home/admin/gunpo
           git fetch origin prod 2>&1 | tail -3
-          git checkout prod 2>/dev/null
+          git checkout prod 2>/dev/null || true
           git reset --hard origin/prod
           echo "Commit: $(git log --oneline -1)"
+
           sudo systemctl restart main_ctl
           sleep 3
-          echo "main_ctl: $(systemctl is-active main_ctl)"
-          echo "cv2_ffmpeg: $(systemctl is-active cv2_ffmpeg)"
+          MAIN=$(systemctl is-active main_ctl)
+          CV2=$(systemctl is-active cv2_ffmpeg)
+          echo "main_ctl:   $MAIN"
+          echo "cv2_ffmpeg: $CV2"
+
+          [ "$MAIN" = "active" ] || exit 1
           echo "=== DONE ==="
