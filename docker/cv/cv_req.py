@@ -30,12 +30,18 @@ TERMINAL_ID = extracted_number
 IP_OPENCV = os.getenv('IP_OPENCV')
 USERNAME_OPENCV = os.getenv('USERNAME_OPENCV')
 PASSWORD_OPENCV = os.getenv('PASSWORD_OPENCV')
+CAMERA_TYPE = os.getenv('CAMERA_TYPE', 'ip').lower()
+STATION_TYPE = os.getenv('STATION_TYPE', 'standard').lower()
 
 WEBSOCKET_URL = select_primary_websocket_url(extracted_number)
 
-encoded_username = urllib.parse.quote(USERNAME_OPENCV, safe='')
-encoded_password = urllib.parse.quote(PASSWORD_OPENCV, safe='')
-RTSP_URL = f"rtsp://{encoded_username}:{encoded_password}@{IP_OPENCV}:554/stream2"
+# STATION_TYPE=smartpole 또는 CAMERA_TYPE=usb 이면 mediamtx RTSP 사용
+if STATION_TYPE == 'smartpole' or CAMERA_TYPE == 'usb':
+    RTSP_URL = os.getenv('RTSP_STREAM1', 'rtsp://localhost:8554/cam')
+else:
+    encoded_username = urllib.parse.quote(USERNAME_OPENCV or '', safe='')
+    encoded_password = urllib.parse.quote(PASSWORD_OPENCV or '', safe='')
+    RTSP_URL = f"rtsp://{encoded_username}:{encoded_password}@{IP_OPENCV}:554/stream2"
 
 
 async def encode_frame(frame):
