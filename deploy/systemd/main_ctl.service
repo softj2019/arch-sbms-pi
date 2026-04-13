@@ -1,0 +1,17 @@
+[Unit]
+Description=Main Control Program in Virtual Environment
+After=network.target
+
+[Service]
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/gunpo/docker
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/admin/gunpo/docker
+ExecStart=/bin/bash -c 'source /home/admin/gunpo/venv/bin/activate && python3 main_ctl.py'
+StandardOutput=append:/home/admin/gunpo/docker/logs/app.log
+StandardError=append:/home/admin/gunpo/docker/logs/app.err
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

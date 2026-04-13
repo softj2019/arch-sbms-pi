@@ -145,6 +145,45 @@
 
 ---
 
+## Phase 2.5 — 전원 제어 릴레이 보드 전환 ★ (추가)
+
+```
+목표: Tapo 네트워크 의존 → Waveshare RPi Relay Board GPIO 제어로 전환
+URL: https://www.waveshare.com/wiki/RPi_Relay_Board
+─────────────────────────────────────────────────────────────────
+  배경
+    기존: TP-Link Tapo 스마트플러그 (IP 네트워크 경유)
+    변경: 릴레이 보드 직접 GPIO 제어 (네트워크 불필요, 응답속도↑)
+
+  릴레이 보드 스펙
+    3채널, Active LOW (GPIO LOW = 릴레이 ON)
+    기본 핀 (BCM): CH1=26(LED), CH2=20(Fan), CH3=21(예비)
+
+  .env 설정
+    POWER_CONTROL_MODE=relay   # relay | tapo
+    RELAY_LED_PIN=26
+    RELAY_FAN_PIN=20
+    RELAY_SPARE_PIN=21
+
+  구현 내용 (완료)
+    devices/relay_board.py   relay_on/off/toggle/is_on/all_off
+    main_ctl.py              set_power() 통합 래퍼
+                             schedule_device_control() relay 분기
+                             start_fan_auto_control()  relay 분기
+                             /toggle_device led_light/fan relay 분기
+
+  하위 호환
+    POWER_CONTROL_MODE=tapo 설정 시 기존 Tapo 코드 그대로 동작
+    (Tapo 설정 장치는 .env에서 TAPO_USERNAME/PASSWORD + IP 필요)
+
+  리스크    낮음 (모드 분기, 기존 Tapo 코드 유지)
+  완료기준  · sola main_ctl active
+            · POWER_CONTROL_MODE=relay → GPIO 핀 직접 ON/OFF 확인
+            · POWER_CONTROL_MODE=tapo  → Tapo 제어 정상 동작 확인
+```
+
+---
+
 ## Phase 3 — 배포 파이프라인 개선 (Day 11~20)
 
 ```

@@ -1,16 +1,16 @@
 #!/bin/bash
 ###############################################################################
-# deploy_from_local.sh
+# deploy_from_local.sh  (Phase 3 개선)
 #
-# Local deployment script for SPMS Raspberry Pi bus stop devices.
-# Run this from a machine on the 192.168.10.x network that can reach the
-# SSH jump host at 192.168.10.107.
+# Local deployment script for SBMS-Pi bus stop devices.
+# Run from a machine on the 192.168.10.x network.
 #
-# Usage:
-#   bash deploy_from_local.sh              # deploy to ALL devices
-#   bash deploy_from_local.sh 10.209.15.58 # deploy to a single device
+# 사용법:
+#   bash deploy_from_local.sh                     # 전체 배포 (hosts.txt)
+#   bash deploy_from_local.sh 10.209.15.58        # 단일 장치
+#   bash deploy_from_local.sh --rollback abc1234  # 특정 커밋으로 롤백
+#   bash deploy_from_local.sh --check             # 상태 확인만 (배포 없음)
 ###############################################################################
-
 set -euo pipefail
 
 REPO_URL="https://github.com/softj2019/arch-sbms-pi.git"
@@ -20,180 +20,214 @@ BIND_ADDR="192.168.10.108"
 REMOTE_USER="admin"
 REMOTE_DIR="/home/admin/gunpo"
 DEPLOY_DIR="/home/admin/gunpo/docker"
+HOSTS_FILE="$(dirname "${BASH_SOURCE[0]}")/deploy/hosts.txt"
 
-ALL_HOSTS=(
-  10.209.15.58
-  10.248.121.141
-  10.16.180.199
-  10.135.235.129
-  10.175.183.222
-  10.237.252.167
-  10.135.26.19
-  10.183.203.184
-  10.223.71.219
-  10.37.199.138
-  10.228.31.17
-  10.206.68.246
-  10.47.108.150
-  10.185.74.120
-  10.146.15.206
-  10.137.225.187
-  10.72.219.36
-  10.248.147.144
-  10.47.237.69
-  10.207.180.137
-  10.203.78.114
-  10.80.110.233
-  10.232.193.180
-  10.143.174.196
-  10.94.103.151
-)
+# ── 인자 파싱 ──────────────────────────────────────────────
+ROLLBACK_COMMIT=""
+CHECK_ONLY=false
+EXPLICIT_HOSTS=()
 
-# If specific hosts are passed as arguments, use those instead
-if [ $# -gt 0 ]; then
-  HOSTS=("$@")
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --rollback)
+            ROLLBACK_COMMIT="$2"
+            shift 2
+            ;;
+        --check)
+            CHECK_ONLY=true
+            shift
+            ;;
+        --*)
+            echo "알 수 없는 옵션: $1" >&2
+            exit 1
+            ;;
+        *)
+            EXPLICIT_HOSTS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# ── 호스트 목록 구성 ────────────────────────────────────────
+if [ ${#EXPLICIT_HOSTS[@]} -gt 0 ]; then
+    HOSTS=("${EXPLICIT_HOSTS[@]}")
+elif [ -f "$HOSTS_FILE" ]; then
+    # hosts.txt 에서 읽기 (빈 줄/주석 제외)
+    mapfile -t HOSTS < <(grep -v '^\s*#' "$HOSTS_FILE" | grep -v '^\s*$' | awk '{print $1}')
 else
-  HOSTS=("${ALL_HOSTS[@]}")
+    echo "ERROR: deploy/hosts.txt 없음. 단일 IP를 인자로 전달하세요." >&2
+    exit 1
 fi
 
-# --- SSH credential setup (key-based, no password hardcoding) ---
-setup_ssh_askpass() {
-  # SSH 키 인증 사용 - 비밀번호 하드코딩 제거
-  # 키 미등록 장치는 deploy 전 install/setup.sh 로 키 등록 필요
-  :
-}
-
-cleanup() {
-  rm -f "$SSH_ASKPASS" 2>/dev/null
-  # Clean up result files
-  rm -f /tmp/deploy_result_*.txt 2>/dev/null
-}
-trap cleanup EXIT
-
-# --- Step 1: Pull latest prod from GitHub ---
+# ── 헤더 출력 ───────────────────────────────────────────────
 echo "============================================"
-echo " SPMS-Pi Deployment ($(date '+%Y-%m-%d %H:%M:%S'))"
+if [ -n "$ROLLBACK_COMMIT" ]; then
+    echo " SBMS-Pi ROLLBACK → $ROLLBACK_COMMIT"
+elif [ "$CHECK_ONLY" = true ]; then
+    echo " SBMS-Pi STATUS CHECK ($(date '+%Y-%m-%d %H:%M:%S'))"
+else
+    echo " SBMS-Pi Deployment ($(date '+%Y-%m-%d %H:%M:%S'))"
+fi
 echo "============================================"
 echo ""
-echo "[1/4] Pulling latest '$BRANCH' branch from GitHub..."
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# ── Step 1: 로컬 git 동기화 (배포/롤백 시) ─────────────────
+if [ "$CHECK_ONLY" = false ]; then
+    echo "[1/4] 로컬 repo 동기화..."
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    cd "$SCRIPT_DIR"
 
-if [ -d .git ]; then
-  git fetch origin "$BRANCH"
-  git checkout "$BRANCH"
-  git reset --hard "origin/$BRANCH"
-else
-  echo "WARNING: Not a git repo. Cloning fresh..."
-  cd /tmp
-  rm -rf spms-pi-deploy
-  git clone -b "$BRANCH" "$REPO_URL" spms-pi-deploy
-  cd spms-pi-deploy
+    if [ -d .git ]; then
+        git fetch origin "$BRANCH"
+        git checkout "$BRANCH"
+        if [ -n "$ROLLBACK_COMMIT" ]; then
+            git reset --hard "$ROLLBACK_COMMIT"
+            echo "  롤백 대상 커밋: $ROLLBACK_COMMIT"
+        else
+            git reset --hard "origin/$BRANCH"
+        fi
+    else
+        echo "  WARNING: git repo 아님. GitHub에서 직접 클론..."
+        cd /tmp
+        rm -rf sbms-pi-deploy
+        git clone -b "$BRANCH" "$REPO_URL" sbms-pi-deploy
+        cd sbms-pi-deploy
+    fi
+
+    LOCAL_COMMIT=$(git log --oneline -1)
+    echo "  적용 커밋: $LOCAL_COMMIT"
+    echo ""
 fi
 
-LOCAL_COMMIT=$(git log --oneline -1)
-echo "Local commit: $LOCAL_COMMIT"
+# ── Step 2: 각 장치에 배포 ─────────────────────────────────
+if [ "$CHECK_ONLY" = false ]; then
+    echo "[2/4] ${#HOSTS[@]}개 장치에 배포 중..."
+else
+    echo "[1/1] ${#HOSTS[@]}개 장치 상태 확인 중..."
+fi
 echo ""
-
-# --- Step 2: Deploy to all devices via jump host ---
-echo "[2/4] Deploying to ${#HOSTS[@]} devices..."
-echo ""
-echo "HOSTNAME|IP|COMMIT|MAIN_CTL|CV2_FFMPEG|STATUS"
-echo "---|---|---|---|---|---"
-
-setup_ssh_askpass
+echo "HOSTNAME|IP|COMMIT|MAIN_CTL|CV2_FFMPEG|HEALTH|STATUS"
+echo "---|---|---|---|---|---|---"
 
 deploy_host() {
-  local ip=$1
-  local result_file="/tmp/deploy_result_${ip}.txt"
+    local ip=$1
+    local result_file="/tmp/deploy_result_${ip}.txt"
 
-  result=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -b "$BIND_ADDR" \
-    "$REMOTE_USER@$JUMP_HOST" \
-    "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i ~/.ssh/id_ed25519 $REMOTE_USER@$ip '
+    if [ "$CHECK_ONLY" = true ]; then
+        remote_cmd="
 HN=\$(hostname)
-
-# --- git pull ---
-cd $REMOTE_DIR 2>/dev/null || cd $REMOTE_DIR
+COMMIT=\$(cd $REMOTE_DIR && git log --oneline -1 2>/dev/null | cut -c1-7 || echo '???')
+MAIN_STATUS=\$(systemctl is-active main_ctl 2>/dev/null || echo 'N/A')
+CV2_STATUS=\$(systemctl is-active cv2_ffmpeg 2>/dev/null || echo 'N/A')
+HEALTH=\$(curl -s --max-time 3 http://localhost:5000/system_info 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"OK\")' 2>/dev/null || echo 'FAIL')
+echo \"\$HN|\$ip|\$COMMIT|\$MAIN_STATUS|\$CV2_STATUS|\$HEALTH|CHECK\"
+"
+    elif [ -n "$ROLLBACK_COMMIT" ]; then
+        remote_cmd="
+HN=\$(hostname)
+cd $REMOTE_DIR
+git fetch origin $BRANCH 2>&1 | tail -1
+git reset --hard $ROLLBACK_COMMIT 2>&1 | tail -1
+COMMIT=\$(git log --oneline -1 | cut -c1-7)
+sudo systemctl restart main_ctl 2>/dev/null; sleep 1
+MAIN_STATUS=\$(systemctl is-active main_ctl 2>/dev/null || echo 'N/A')
+sudo systemctl restart cv2_ffmpeg 2>/dev/null; sleep 2
+CV2_STATUS=\$(systemctl is-active cv2_ffmpeg 2>/dev/null || echo 'N/A')
+HEALTH=\$(curl -s --max-time 3 http://localhost:5000/system_info 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"OK\")' 2>/dev/null || echo 'FAIL')
+echo \"\$HN|\$ip|\$COMMIT|\$MAIN_STATUS|\$CV2_STATUS|\$HEALTH|ROLLBACK\"
+"
+    else
+        remote_cmd="
+HN=\$(hostname)
+cd $REMOTE_DIR
 git fetch origin $BRANCH 2>&1 | tail -1
 git reset --hard origin/$BRANCH 2>&1 | tail -1
 COMMIT=\$(git log --oneline -1 | cut -c1-7)
+sudo systemctl restart main_ctl 2>/dev/null; sleep 1
+MAIN_STATUS=\$(systemctl is-active main_ctl 2>/dev/null || echo 'N/A')
+sudo systemctl restart cv2_ffmpeg 2>/dev/null; sleep 2
+CV2_STATUS=\$(systemctl is-active cv2_ffmpeg 2>/dev/null || echo 'N/A')
+HEALTH=\$(curl -s --max-time 3 http://localhost:5000/system_info 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"OK\")' 2>/dev/null || echo 'FAIL')
+echo \"\$HN|\$ip|\$COMMIT|\$MAIN_STATUS|\$CV2_STATUS|\$HEALTH|OK\"
+"
+    fi
 
-# --- restart main_ctl service ---
-sudo systemctl restart main_ctl 2>/dev/null
-sleep 1
-MAIN_STATUS=\$(systemctl is-active main_ctl 2>/dev/null || echo \"N/A\")
+    result=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -b "$BIND_ADDR" \
+        "$REMOTE_USER@$JUMP_HOST" \
+        "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i ~/.ssh/id_ed25519 $REMOTE_USER@$ip '$remote_cmd'" 2>/dev/null)
 
-# --- restart cv2_ffmpeg service ---
-sudo systemctl restart cv2_ffmpeg 2>/dev/null
-sleep 2
-CV2_STATUS=\$(systemctl is-active cv2_ffmpeg 2>/dev/null || echo \"N/A\")
-
-echo \"\$HN|\$ip|\$COMMIT|\$MAIN_STATUS|\$CV2_STATUS|OK\"
-' 2>/dev/null; rm -f \"\$SSH_ASKPASS\"" 2>/dev/null)
-
-  if [ -z "$result" ]; then
-    echo "???|$ip|???|???|???|CONNECT-FAIL" > "$result_file"
-  else
-    echo "$result" > "$result_file"
-  fi
+    if [ -z "$result" ]; then
+        echo "???|$ip|???|???|???|???|CONNECT-FAIL" > "$result_file"
+    else
+        echo "$result" > "$result_file"
+    fi
 }
 
-# Deploy in parallel (max 5 at a time to avoid overloading jump host)
+# 병렬 배포 (최대 5개 동시)
 PARALLEL_MAX=5
 running=0
 
 for ip in "${HOSTS[@]}"; do
-  deploy_host "$ip" &
-  running=$((running + 1))
-
-  if [ "$running" -ge "$PARALLEL_MAX" ]; then
-    wait -n 2>/dev/null || wait
-    running=$((running - 1))
-  fi
+    deploy_host "$ip" &
+    running=$((running + 1))
+    if [ "$running" -ge "$PARALLEL_MAX" ]; then
+        wait -n 2>/dev/null || wait
+        running=$((running - 1))
+    fi
 done
 wait
 
-# --- Step 3: Collect and display results ---
+# ── Step 3: 결과 집계 ───────────────────────────────────────
 echo ""
 SUCCESS=0
 FAIL=0
+HEALTH_FAIL=0
 
 for ip in "${HOSTS[@]}"; do
-  result_file="/tmp/deploy_result_${ip}.txt"
-  if [ -f "$result_file" ]; then
-    line=$(cat "$result_file")
-    echo "$line"
-    if echo "$line" | grep -q "CONNECT-FAIL"; then
-      FAIL=$((FAIL + 1))
+    result_file="/tmp/deploy_result_${ip}.txt"
+    if [ -f "$result_file" ]; then
+        line=$(cat "$result_file")
+        echo "$line"
+        if echo "$line" | grep -q "CONNECT-FAIL"; then
+            FAIL=$((FAIL + 1))
+        else
+            SUCCESS=$((SUCCESS + 1))
+            if echo "$line" | grep -q "HEALTH|FAIL\|FAIL|OK\|FAIL|ROLLBACK"; then
+                HEALTH_FAIL=$((HEALTH_FAIL + 1))
+            fi
+        fi
     else
-      SUCCESS=$((SUCCESS + 1))
+        echo "???|$ip|???|???|???|???|NO-RESULT"
+        FAIL=$((FAIL + 1))
     fi
-  else
-    echo "???|$ip|???|???|???|NO-RESULT"
-    FAIL=$((FAIL + 1))
-  fi
+    rm -f "$result_file"
 done
 
-# --- Step 4: Summary ---
+# ── Step 4: 요약 ────────────────────────────────────────────
 echo ""
 echo "============================================"
-echo "[4/4] Deployment Summary"
+echo "[Summary]"
 echo "============================================"
-echo "  Total devices:  ${#HOSTS[@]}"
-echo "  Success:        $SUCCESS"
-echo "  Failed:         $FAIL"
-echo "  Local commit:   $LOCAL_COMMIT"
-echo "  Timestamp:      $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  총 장치:    ${#HOSTS[@]}"
+echo "  성공:       $SUCCESS"
+echo "  연결 실패:  $FAIL"
+echo "  Health 이상: $HEALTH_FAIL"
+if [ "$CHECK_ONLY" = false ]; then
+    echo "  커밋:       ${LOCAL_COMMIT:-N/A}"
+fi
+echo "  시각:       $(date '+%Y-%m-%d %H:%M:%S')"
 echo "============================================"
 
 if [ "$FAIL" -gt 0 ]; then
-  echo ""
-  echo "WARNING: $FAIL device(s) failed. Re-run for specific IPs:"
-  echo "  bash deploy_from_local.sh <ip1> <ip2> ..."
-  exit 1
+    echo ""
+    echo "WARNING: $FAIL 개 장치 연결 실패. 재시도:"
+    echo "  bash deploy_from_local.sh <ip>"
 fi
 
-echo ""
-echo "All devices deployed successfully."
-exit 0
+if [ "$HEALTH_FAIL" -gt 0 ]; then
+    echo ""
+    echo "WARNING: $HEALTH_FAIL 개 장치 health check 실패."
+    echo "  롤백 필요 시: bash deploy_from_local.sh --rollback <COMMIT>"
+fi
+
+[ "$FAIL" -eq 0 ]

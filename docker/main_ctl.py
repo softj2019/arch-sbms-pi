@@ -23,11 +23,20 @@ load_dotenv()
 ip_address_light = os.getenv("IP_ADDRESS_LED")
 ip_address_fan = os.getenv("IP_ADDRESS_FAN")
 
+# ── 전원 제어 모드 ─────────────────────────────────────────
+# POWER_CONTROL_MODE=relay  → Waveshare RPi Relay Board (GPIO)
+# POWER_CONTROL_MODE=tapo   → TP-Link Tapo 스마트플러그 (네트워크)
+POWER_CONTROL_MODE = os.getenv("POWER_CONTROL_MODE", "tapo").lower()
+RELAY_LED_PIN   = int(os.getenv("RELAY_LED_PIN",   "26"))
+RELAY_FAN_PIN   = int(os.getenv("RELAY_FAN_PIN",   "20"))
+RELAY_SPARE_PIN = int(os.getenv("RELAY_SPARE_PIN", "21"))
+
 from queue import Queue
 from core.stomp_client import stomp_client
 from core.stomp_rep_client import stomp_req_client
 import asyncio
 from devices.tapo_on import get_device_info, device_on, device_off
+from devices.relay_board import relay_on, relay_off, relay_is_on, relay_toggle
 import subprocess
 from functools import lru_cache
 from core.network_probe import collect_network_status
@@ -222,7 +231,7 @@ def people_detection_watchdog():
                 f"people detection timeout exceeded ({int(elapsed)}s > {PEOPLE_DETECTION_TIMEOUT_SEC}s)"
             )
 
-# tapo 제어
+# tapo 제어 (내부 전용)
 async def set_tapo_power_if_needed(ip, turn_on: bool, device_name: str = "Tapo"):
     try:
         device_status = await get_device_info(ip)
@@ -237,11 +246,26 @@ async def set_tapo_power_if_needed(ip, turn_on: bool, device_name: str = "Tapo")
     except Exception as e:
         logging.error(f"set_tapo_power_if_needed: {device_name} 제어 실패: {e}")
 
+# ── 통합 전원 제어 (relay | tapo 모드 분기) ─────────────────
+async def set_power(pin_or_ip, turn_on: bool, device_name: str = ""):
+    if POWER_CONTROL_MODE == "relay":
+        try:
+            if turn_on:
+                relay_on(pin_or_ip)
+            else:
+                relay_off(pin_or_ip)
+            logging.info(f"set_power[relay]: {device_name} {'ON' if turn_on else 'OFF'} (pin {pin_or_ip})")
+        except Exception as e:
+            logging.error(f"set_power[relay]: {device_name} 제어 실패: {e}")
+    else:
+        await set_tapo_power_if_needed(pin_or_ip, turn_on, device_name)
+
 # fan 제어
 def start_fan_auto_control():
     global config_cache, ip_address_fan
 
     async def fan_control_loop():
+        fan_target = RELAY_FAN_PIN if POWER_CONTROL_MODE == "relay" else ip_address_fan
         while True:
             try:
                 t1h = float(config_cache.get("t1h", "0"))
@@ -249,10 +273,10 @@ def start_fan_auto_control():
 
                 if t1h > fan_temp:
                     logging.info(f"start_fan_auto_control: 외부 온도({t1h}°C) > 기준 온도({fan_temp}°C) → 팬 ON")
-                    await set_tapo_power_if_needed(ip_address_fan, True, "팬")
+                    await set_power(fan_target, True, "팬")
                 else:
                     logging.info(f"start_fan_auto_control: 외부 온도({t1h}°C) ≤ 기준 온도({fan_temp}°C) → 팬 OFF")
-                    await set_tapo_power_if_needed(ip_address_fan, False, "팬")
+                    await set_power(fan_target, False, "팬")
             except Exception as e:
                 logging.error(f"start_fan_auto_control: 팬 자동 제어 오류: {e}")
             await asyncio.sleep(10)
@@ -354,50 +378,53 @@ def check_time_reached(target_time_str):
     target_time = datetime.strptime(target_time_str, "%H:%M").time()
     return now >= target_time
 
-# 서버에서 설정된 시간에 맞춰 장치 on/off 하는 함수
-async def schedule_device_control(ip):
-    if not ip:
-        logging.error("schedule_device_control: TAPO_DEVICE_IP 없음 -> .env 확인필요")
+# 서버에서 설정된 시간에 맞춰 LED 전등 on/off 하는 함수
+async def schedule_device_control(ip_or_pin):
+    if not ip_or_pin:
+        logging.error("schedule_device_control: LED 제어 대상(IP/PIN) 없음 -> .env 확인필요")
         return
 
     while True:
         on_time, off_time = get_on_off_times()
-        try:
-            device_status = await get_device_info(ip)
-        except Exception as e:
-            logging.error(f"schedule_device_control: 장치 상태 확인 실패: {e}")
-            await asyncio.sleep(10)
-            continue
 
-        if ip.endswith("103"):
-            device_name = "LED"
-            # 장치 on/off
+        if POWER_CONTROL_MODE == "relay":
+            # 릴레이 모드: GPIO 상태 직접 확인
+            is_on = relay_is_on(RELAY_LED_PIN)
             if is_between_times(on_time, off_time):
-                # 켜야 할 시간대
-                if not device_status.device_on:
-                    await set_tapo_power_if_needed(ip, True, "LED")
-                    logging.info(f"schedule_device_control: {device_name} ON: (시간: {on_time} ~ {off_time})")
+                if not is_on:
+                    relay_on(RELAY_LED_PIN)
+                    logging.info(f"schedule_device_control: LED ON [relay] (시간: {on_time} ~ {off_time})")
             else:
-                # 꺼야 할 시간대
-                if device_status.device_on:
-                    # await device_off(ip)
-                    await set_tapo_power_if_needed(ip, False, "LED")
-                    logging.info(f"schedule_device_control {device_name} OFF: 시간: {off_time} ~ {on_time})")
-        elif ip.endswith("104"):
-            # fan 의 경우 시간에 따른 처리 로직 없음
-            device_name = "FAN"
+                if is_on:
+                    relay_off(RELAY_LED_PIN)
+                    logging.info(f"schedule_device_control: LED OFF [relay] (시간: {off_time} ~ {on_time})")
         else:
-            device_name = "Unknown"
-            logging.error(f"schedule_device_control: ip 이상: {ip}")
+            # Tapo 모드: 네트워크 장치 상태 확인
+            try:
+                device_status = await get_device_info(ip_or_pin)
+            except Exception as e:
+                logging.error(f"schedule_device_control: 장치 상태 확인 실패: {e}")
+                await asyncio.sleep(10)
+                continue
+
+            if is_between_times(on_time, off_time):
+                if not device_status.device_on:
+                    await set_tapo_power_if_needed(ip_or_pin, True, "LED")
+                    logging.info(f"schedule_device_control: LED ON [tapo] (시간: {on_time} ~ {off_time})")
+            else:
+                if device_status.device_on:
+                    await set_tapo_power_if_needed(ip_or_pin, False, "LED")
+                    logging.info(f"schedule_device_control: LED OFF [tapo] (시간: {off_time} ~ {on_time})")
 
         await asyncio.sleep(3)
 
 # 비동기 루프를 실행하는 스레드
 def start_async_loop():
     global ip_address_light
+    target = RELAY_LED_PIN if POWER_CONTROL_MODE == "relay" else ip_address_light
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(schedule_device_control(ip_address_light))
+    loop.run_until_complete(schedule_device_control(target))
 
 # led 토글
 def toggle_led():
@@ -854,29 +881,39 @@ def handlePower():
 
         elif device == "led_light":
             try:
-                is_on = asyncio.run(get_device_info(ip_address_light))
-                if is_on.device_on:
-                    asyncio.run(device_off(ip_address_light))
-                    new_state = "OFF"
+                if POWER_CONTROL_MODE == "relay":
+                    new_is_on = relay_toggle(RELAY_LED_PIN)
+                    new_state = "ON" if new_is_on else "OFF"
+                    logging.info(f"LED Light 토글 [relay]: {new_state}")
                 else:
-                    asyncio.run(device_on(ip_address_light))
-                    new_state = "ON"
+                    is_on = asyncio.run(get_device_info(ip_address_light))
+                    if is_on.device_on:
+                        asyncio.run(device_off(ip_address_light))
+                        new_state = "OFF"
+                    else:
+                        asyncio.run(device_on(ip_address_light))
+                        new_state = "ON"
             except Exception as e:
-                logging.error(f"Tapo Light 제어 오류: {e}")
+                logging.error(f"LED Light 제어 오류: {e}")
                 return jsonify({"status": "error", "message": "LED Light 제어 실패"}), 500
 
         elif device == "fan":
             try:
-                fan_is_on = asyncio.run(get_device_info(ip_address_fan))
-                if fan_is_on.device_on:
-                    asyncio.run(device_off(ip_address_fan))
-                    new_state = "OFF"
+                if POWER_CONTROL_MODE == "relay":
+                    new_is_on = relay_toggle(RELAY_FAN_PIN)
+                    new_state = "ON" if new_is_on else "OFF"
+                    logging.info(f"Fan 토글 [relay]: {new_state}")
                 else:
-                    asyncio.run(device_on(ip_address_fan))
-                    new_state = "ON"
-                logging.info(f"Tapo 정보: {fan_is_on}")
+                    fan_is_on = asyncio.run(get_device_info(ip_address_fan))
+                    if fan_is_on.device_on:
+                        asyncio.run(device_off(ip_address_fan))
+                        new_state = "OFF"
+                    else:
+                        asyncio.run(device_on(ip_address_fan))
+                        new_state = "ON"
+                    logging.info(f"Tapo Fan 정보: {fan_is_on}")
             except Exception as e:
-                logging.error(f"Tapo Fan 제어 오류: {e}")
+                logging.error(f"Fan 제어 오류: {e}")
                 return jsonify({"status": "error", "message": "Fan 제어 실패"}), 500
 
         else:
