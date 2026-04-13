@@ -18,6 +18,9 @@ from core.ws_health import report_ws_alive
 # .env 파일을 로드
 load_dotenv()
 cv_req_process = None
+# 토글(action=None) 중복 방지 쿨다운 (device별 마지막 처리 시각)
+_last_toggle_time: dict = {}
+TOGGLE_COOLDOWN_SEC = 15
 DEV_WEBSOCKET_URL = os.getenv('DEV_WEBSOCKET_URL')
 PROD_WEBSOCKET_URL = os.getenv('PROD_WEBSOCKET_URL')
 API_URL= os.getenv('API_URL')
@@ -273,8 +276,19 @@ async def stomp_req_client(url):
                                     if power_action is None and override_duration_sec is None:
                                         # 방향도 override도 없는 메시지는 무시
                                         logging.info("power action 없음 (방향·override 모두 없음) - 스킵")
+                                    elif power_action is None:
+                                        # toggle 의도: 서버가 동일 payload를 5초 후 재전송하는 버그 방지
+                                        now = time.time()
+                                        last_t = _last_toggle_time.get(device, 0)
+                                        if now - last_t < TOGGLE_COOLDOWN_SEC:
+                                            logging.info("power/action toggle 쿨다운 무시 (device=%s elapsed=%.1fs)", device, now - last_t)
+                                        elif power_action_task is None or power_action_task.done():
+                                            _last_toggle_time[device] = now
+                                            power_action_task = asyncio.create_task(run_handle_power_action(device, None, override_duration_sec))
+                                        else:
+                                            logging.info("이전 power action이 아직 실행 중입니다. 새로운 호출을 건너뜁니다.")
                                     elif power_action_task is None or power_action_task.done():
-                                        # power_action=None이면 /handle/power에서 toggle로 처리됨
+                                        # 명시적 ON/OFF: 쿨다운 없이 즉시 처리
                                         power_action_task = asyncio.create_task(run_handle_power_action(device, power_action, override_duration_sec))
                                     else:
                                         logging.info("이전 power action이 아직 실행 중입니다. 새로운 호출을 건너뜁니다.")
