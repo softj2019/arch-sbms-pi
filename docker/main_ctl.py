@@ -1336,8 +1336,6 @@ def start_flask_app():
         app.run(host="0.0.0.0", port=5000, debug=False)
     except Exception as e:
         logging.error(f"start_flask_app: Flask 실행 실패: {e}")
-    finally:
-        GPIO.cleanup()  # 자원 정리
 
 # stomp client 실행
 async def start_stomp_clients():
@@ -1353,6 +1351,21 @@ async def start_stomp_req_client():
 
 if __name__ == "__main__":
     logger = setup_logging("main_ctl")
+
+    # ── PID 잠금: 중복 실행 방지 ─────────────────────────────
+    import fcntl
+    PID_FILE = "/tmp/main_ctl.pid"
+    _pid_fd = open(PID_FILE, "w")
+    try:
+        fcntl.flock(_pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        existing = open(PID_FILE).read().strip()
+        logging.error(f"main_ctl: 이미 실행 중입니다 (PID {existing}). 종료합니다.")
+        raise SystemExit(1)
+    _pid_fd.write(str(os.getpid()))
+    _pid_fd.flush()
+    # ─────────────────────────────────────────────────────────
+
     # 프로세스 초기화
     flask_process = None
     stomp_process = None
