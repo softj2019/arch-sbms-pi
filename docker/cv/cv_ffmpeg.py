@@ -22,7 +22,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-from websocket_endpoint import select_primary_websocket_url, websocket_connection
+from core.websocket_endpoint import select_primary_websocket_url, websocket_connection
 
 # 기본 설정
 load_dotenv()
