@@ -56,13 +56,11 @@ else
   HOSTS=("${ALL_HOSTS[@]}")
 fi
 
-# --- SSH credential setup (sshpass-free approach) ---
+# --- SSH credential setup (key-based, no password hardcoding) ---
 setup_ssh_askpass() {
-  export SSH_ASKPASS_REQUIRE=force
-  export SSH_ASKPASS=$(mktemp)
-  echo '#!/bin/bash' > "$SSH_ASKPASS"
-  echo 'echo admin' >> "$SSH_ASKPASS"
-  chmod +x "$SSH_ASKPASS"
+  # SSH 키 인증 사용 - 비밀번호 하드코딩 제거
+  # 키 미등록 장치는 deploy 전 install/setup.sh 로 키 등록 필요
+  :
 }
 
 cleanup() {
@@ -112,12 +110,7 @@ deploy_host() {
 
   result=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -b "$BIND_ADDR" \
     "$REMOTE_USER@$JUMP_HOST" \
-    "export SSH_ASKPASS_REQUIRE=force; \
-     export SSH_ASKPASS=\$(mktemp); \
-     echo '#!/bin/bash' > \"\$SSH_ASKPASS\"; \
-     echo 'echo admin' >> \"\$SSH_ASKPASS\"; \
-     chmod +x \"\$SSH_ASKPASS\"; \
-     ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 $REMOTE_USER@$ip '
+    "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i ~/.ssh/id_ed25519 $REMOTE_USER@$ip '
 HN=\$(hostname)
 
 # --- git pull ---

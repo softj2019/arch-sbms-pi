@@ -4,7 +4,17 @@ __pycache__/
 *.bak.*
 docker/run/
 docker/logs/
+docker/.env
+docker/.env_custom
 data/
 *.pt
 venv/
 node_modules/
+logs_*/
+report_*.md
+report_log.txt
+collect_logs_*.log
+collect_logs_*.sh
+debug_*/
+debug_capture.py
+.omc/
