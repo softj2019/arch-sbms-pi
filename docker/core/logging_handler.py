@@ -4,7 +4,7 @@ import os
 import logging
 from datetime import datetime
 
-from network_resilience import record_outage_log
+from core.network_resilience import record_outage_log
 
 # 로그파일 저장 디렉토리 설정
 def get_log_directory(folder):

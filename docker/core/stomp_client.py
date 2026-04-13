@@ -8,13 +8,13 @@ import psutil
 import json
 import logging
 import requests
-from tapo_on import get_device_info
+from devices.tapo_on import get_device_info
 import cv2
 import urllib.parse
 
 import subprocess
-from network_probe import collect_network_status
-from network_resilience import (
+from core.network_probe import collect_network_status
+from core.network_resilience import (
     NETWORK_OVERVIEW_INTERVAL_SEC,
     NETWORK_RETRY_INTERVAL_SEC,
     build_runtime_fields,
@@ -23,8 +23,8 @@ from network_resilience import (
     should_request_reboot,
     update_network_state,
 )
-from websocket_endpoint import websocket_connection
-from ws_health import report_ws_alive
+from core.websocket_endpoint import websocket_connection
+from core.ws_health import report_ws_alive
 # .env 파일을 로드
 load_dotenv()
 

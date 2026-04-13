@@ -12,8 +12,8 @@ import time
 import urllib.parse
 import socket
 import re
-from websocket_endpoint import websocket_connection
-from ws_health import report_ws_alive
+from core.websocket_endpoint import websocket_connection
+from core.ws_health import report_ws_alive
 # from rts485Status import get_motor_power_status, initialize_gpio
 # .env 파일을 로드
 load_dotenv()

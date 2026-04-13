@@ -7,7 +7,7 @@ import json
 from typing import Optional
 from pydantic import BaseModel
 import time
-from logging_handler import setup_logging
+from core.logging_handler import setup_logging
 
 load_dotenv()
 logging.basicConfig(
