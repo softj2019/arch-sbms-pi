@@ -3,8 +3,8 @@ import os
 import time
 from dotenv import load_dotenv
 
-from logging_handler import setup_logging
-from network_resilience import load_state, request_reboot, should_request_reboot
+from core.logging_handler import setup_logging
+from core.network_resilience import load_state, request_reboot, should_request_reboot
 
 load_dotenv()
 

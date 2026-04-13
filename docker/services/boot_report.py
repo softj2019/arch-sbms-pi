@@ -15,7 +15,7 @@ import subprocess
 import time
 
 from dotenv import load_dotenv
-from websocket_endpoint import websocket_connection
+from core.websocket_endpoint import websocket_connection
 
 load_dotenv()
 

@@ -16,7 +16,7 @@ import signal
 import requests
 import threading
 from typing import TypedDict
-from logging_handler import setup_logging
+from core.logging_handler import setup_logging
 
 # .env 파일을 로드
 load_dotenv()
@@ -24,16 +24,16 @@ ip_address_light = os.getenv("IP_ADDRESS_LED")
 ip_address_fan = os.getenv("IP_ADDRESS_FAN")
 
 from queue import Queue
-from stomp_client import stomp_client
-from stomp_rep_client import stomp_req_client
+from core.stomp_client import stomp_client
+from core.stomp_rep_client import stomp_req_client
 import asyncio
-from tapo_on import get_device_info, device_on, device_off
+from devices.tapo_on import get_device_info, device_on, device_off
 import subprocess
 from functools import lru_cache
-from network_probe import collect_network_status
-from network_resilience import build_runtime_fields
-from websocket_endpoint import select_primary_websocket_url, websocket_connection
-from ws_health import is_ws_healthy, get_ws_health
+from core.network_probe import collect_network_status
+from core.network_resilience import build_runtime_fields
+from core.websocket_endpoint import select_primary_websocket_url, websocket_connection
+from core.ws_health import is_ws_healthy, get_ws_health
 
 # Flask 애플리케이션 초기화
 app = Flask(__name__)
@@ -429,7 +429,7 @@ def extract_ip_port(url: str):
 @app.route('/start_browser', methods=['POST'])
 def start_browser():
     try:
-        subprocess.Popen(["python3", "start_browser.py"])
+        subprocess.Popen(["python3", "services/start_browser.py"])
         return jsonify({"status": "success", "message": "Chromium browser started"}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -438,7 +438,7 @@ def start_browser():
 @app.route('/stop_browser', methods=['POST'])
 def stop_browser():
     try:
-        subprocess.run(["python3", "stop_brower.py"], check=True)
+        subprocess.run(["python3", "services/stop_brower.py"], check=True)
         return jsonify({"status": "success", "message": "Chromium browser stopped"}), 200
     except subprocess.CalledProcessError:
         return jsonify({"status": "error", "message": "No Chromium process found"}), 404
@@ -841,7 +841,7 @@ def handlePower():
                     else:
                         return jsonify({"status": "error", "message": "Chromium 종료 실패"}), 500
                 else:
-                    subprocess.Popen(["python3", "start_browser.py"], stderr=subprocess.PIPE)
+                    subprocess.Popen(["python3", "services/start_browser.py"], stderr=subprocess.PIPE)
                     time.sleep(3)  # 실행 안정성을 위해 대기
 
                     pids_after = find_chromium_main_pids()

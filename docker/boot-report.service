@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=oneshot
 User=admin
 WorkingDirectory=/home/admin/gunpo/docker
-ExecStart=/home/admin/gunpo/venv/bin/python3 /home/admin/gunpo/docker/boot_report.py
+Environment=PYTHONPATH=/home/admin/gunpo/docker
+ExecStart=/home/admin/gunpo/venv/bin/python3 /home/admin/gunpo/docker/services/boot_report.py
 StandardOutput=append:/home/admin/gunpo/docker/logs/boot_report.log
 StandardError=append:/home/admin/gunpo/docker/logs/boot_report.log
 RemainAfterExit=no
