@@ -85,6 +85,10 @@ logging.info(f"TERMINAL_ID {TERMINAL_ID}")
 SERIAL_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
 
+# LED 전광판 설정 (.env 우선, 없으면 하드코딩 기본값 사용)
+LED_LINES = int(os.getenv('LED_LINES', '2'))
+LED_YSZ   = os.getenv('LED_YSZ', '1')
+
 # M10 프로토콜 명령어
 POWER_ON_CMD = bytes.fromhex('02 86 0A 00 50 00 4F 00 57 00 3D 00 31 00 F6 03')  # 파워 ON
 POWER_OFF_CMD = bytes.fromhex('02 86 0A 00 50 00 4F 00 57 00 3D 00 30 00 F5 03')  # 파워 OFF
@@ -1009,10 +1013,15 @@ def display_default_message():
                 h1, h2 = hour[0], hour[1]
                 m1, m2 = minute[0], minute[1]
 
-                default_message = (
-                    f"RST=1,LNE=1,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h2}·{m2} ,"
-                    f"RST=1,LNE=2,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h1}·{m1} "
-                )
+                if LED_LINES >= 2:
+                    default_message = (
+                        f"RST=1,LNE=1,YSZ={LED_YSZ},SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h2}·{m2} ,"
+                        f"RST=1,LNE=2,YSZ={LED_YSZ},SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h1}·{m1} "
+                    )
+                else:
+                    default_message = (
+                        f"RST=1,LNE=1,YSZ={LED_YSZ},SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {hour}:{minute} "
+                    )
                 logging.info(f"display_default_message: 메시지 갱신: {hour}:{minute}")
                 command = encode_to_protocol("", default_message)
                 send_command(command)
