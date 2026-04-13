@@ -142,7 +142,9 @@ def update_network_state(network_status, source: str) -> dict:
     probe_snapshot = _build_probe_snapshot(network_status, source, current_time, next_retry_count)
     _append_probe_snapshot(state, probe_snapshot)
 
-    logging.info(
+    # 정상 상태는 DEBUG, 장애 시만 INFO
+    _log = logging.debug if network_status.healthy else logging.info
+    _log(
         "network_resilience: diagnostic source=%s healthy=%s retry=%s gateway_ok=%s lte_link=%s outbound_ok=%s wan_ip=%s public_ip=%s reason=%s",
         source,
         "Y" if network_status.healthy else "N",

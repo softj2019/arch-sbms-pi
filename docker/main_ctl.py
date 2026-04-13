@@ -24,9 +24,8 @@ ip_address_light = os.getenv("IP_ADDRESS_LED")
 ip_address_fan = os.getenv("IP_ADDRESS_FAN")
 
 # ── 전원 제어 모드 ─────────────────────────────────────────
-# POWER_CONTROL_MODE=relay  → Waveshare RPi Relay Board (GPIO)
-# POWER_CONTROL_MODE=tapo   → TP-Link Tapo 스마트플러그 (네트워크)
-POWER_CONTROL_MODE = os.getenv("POWER_CONTROL_MODE", "tapo").lower()
+# POWER_CONTROL_MODE: STATION_TYPE=smartpole 이면 relay 강제, 아니면 .env 값 사용
+# (실제 결정은 STATION_TYPE 로드 후 아래에서 수행)
 RELAY_LED_PIN   = int(os.getenv("RELAY_LED_PIN",   "26"))
 RELAY_FAN_PIN   = int(os.getenv("RELAY_FAN_PIN",   "20"))
 RELAY_SPARE_PIN = int(os.getenv("RELAY_SPARE_PIN", "21"))
@@ -94,9 +93,23 @@ logging.info(f"TERMINAL_ID {TERMINAL_ID}")
 SERIAL_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
 
-# LED 전광판 설정 (.env 우선, 없으면 하드코딩 기본값 사용)
+# 정류장 타입 설정
+# smartpole : 릴레이보드로 LED/FAN 전원 제어 (UP/DOWN/STOP 모터 없음)
+# standard  : GPIO pulse로 모터(UP/DOWN/STOP) 제어 (기본값, 미설정 시 동일)
+STATION_TYPE = os.getenv('STATION_TYPE', 'standard').lower()
+
+# 스마트폴이면 POWER_CONTROL_MODE를 relay로 강제
+if STATION_TYPE == 'smartpole':
+    POWER_CONTROL_MODE = 'relay'
+else:
+    POWER_CONTROL_MODE = os.getenv("POWER_CONTROL_MODE", "tapo").lower()
+
+# 환경 타입: dev → 폰트 축소 등 개발 편의 적용 / prod → 운영 기본값
+ENV_TYPE = os.getenv('ENV_TYPE', 'prod').lower()
+
+# LED 전광판 설정 (.env 우선, 없으면 ENV_TYPE 기반 기본값)
 LED_LINES = int(os.getenv('LED_LINES', '2'))
-LED_YSZ   = os.getenv('LED_YSZ', '1')
+LED_YSZ   = os.getenv('LED_YSZ', '1' if ENV_TYPE == 'dev' else '2')
 
 # M10 프로토콜 명령어
 POWER_ON_CMD = bytes.fromhex('02 86 0A 00 50 00 4F 00 57 00 3D 00 31 00 F6 03')  # 파워 ON
@@ -138,6 +151,11 @@ cv_count_screen_action = 0
 emergency_message_status = 0
 stop_event = threading.Event()  # 중단 이벤트
 led_state = "OFF"
+
+# ── manual_override: 수동 명령 수신 시 자동 루프가 덮어쓰지 않도록 보호 ──────────
+MANUAL_OVERRIDE_DURATION_SEC = int(os.getenv("MANUAL_OVERRIDE_DURATION_SEC", "300"))
+led_manual_override_until: datetime | None = None
+fan_manual_override_until: datetime | None = None
 
 # .env_custom 파일 불러오기
 project_root = os.path.abspath(os.path.dirname(__file__))
@@ -266,7 +284,16 @@ def start_fan_auto_control():
 
     async def fan_control_loop():
         fan_target = RELAY_FAN_PIN if POWER_CONTROL_MODE == "relay" else ip_address_fan
+        _fan_override_logged = False
         while True:
+            if fan_manual_override_until and datetime.now() < fan_manual_override_until:
+                _fan_override_logged = False
+                logging.debug("start_fan_auto_control: manual override 중 - 자동제어 스킵")
+                await asyncio.sleep(10)
+                continue
+            if not _fan_override_logged and fan_manual_override_until is not None:
+                logging.info("start_fan_auto_control: manual override 만료 - 자동제어 복귀")
+                _fan_override_logged = True
             try:
                 t1h = float(config_cache.get("t1h", "0"))
                 fan_temp = float(config_cache.get("fanTemperature", "100"))
@@ -384,7 +411,17 @@ async def schedule_device_control(ip_or_pin):
         logging.error("schedule_device_control: LED 제어 대상(IP/PIN) 없음 -> .env 확인필요")
         return
 
+    _led_override_logged = False
     while True:
+        if led_manual_override_until and datetime.now() < led_manual_override_until:
+            _led_override_logged = False
+            logging.debug("schedule_device_control: manual override 중 - 자동제어 스킵")
+            await asyncio.sleep(3)
+            continue
+        if not _led_override_logged and led_manual_override_until is not None:
+            logging.info("schedule_device_control: manual override 만료 - 자동제어 복귀")
+            _led_override_logged = True
+
         on_time, off_time = get_on_off_times()
 
         if POWER_CONTROL_MODE == "relay":
@@ -501,6 +538,7 @@ def get_system_info():
         used_disk = total_disk - free_disk
         network_status = collect_network_status()
 
+        now = datetime.now()
         system_info = {
             "cpu_usage": f"{cpu_usage:.2f}%",
             "memory": f"{total_memory:.2f} GB / {used_memory:.2f} GB / {available_memory:.2f} GB",
@@ -512,6 +550,10 @@ def get_system_info():
             "network_outbound": "ON" if network_status.outbound_ok else "OFF",
             "network_health": "ON" if network_status.healthy else "OFF",
             "network_check_required": "Y" if not network_status.healthy else "N",
+            "led_override_active": led_manual_override_until is not None and now < led_manual_override_until,
+            "led_override_expires_at": led_manual_override_until.isoformat(timespec="seconds") if led_manual_override_until and now < led_manual_override_until else None,
+            "fan_override_active": fan_manual_override_until is not None and now < fan_manual_override_until,
+            "fan_override_expires_at": fan_manual_override_until.isoformat(timespec="seconds") if fan_manual_override_until and now < fan_manual_override_until else None,
         }
         system_info.update(build_runtime_fields(network_status, include_pending_events=True))
 
@@ -667,6 +709,17 @@ def stop_pins():
 
 # 모니터 상태 확인
 def get_motor_status():
+    # 스마트폴: 모터 없음, 릴레이 LED/FAN 상태 반환
+    if STATION_TYPE == 'smartpole':
+        try:
+            return {
+                "LED": "ON" if relay_is_on(RELAY_LED_PIN) else "OFF",
+                "FAN": "ON" if relay_is_on(RELAY_FAN_PIN) else "OFF",
+            }
+        except Exception as e:
+            logging.error(f"Error reading relay status: {e}")
+            return {"LED": "ERROR", "FAN": "ERROR"}
+
     try:
         time.sleep(0.1)
         up_state = GPIO.input(UP_PIN)
@@ -715,6 +768,9 @@ def get_screen_action_status():
 # 명령어 활성 및 gpio 상태 변경
 def activate_command(command, duration=0.1):
     global last_screen_action, current_screen_action, current_screen_action_updated_at
+    if STATION_TYPE == 'smartpole':
+        logging.info(f"activate_command: smartpole - 모터 없음, 명령 무시: {command}")
+        return
     try:
         if command == "UP":
             GPIO.output(UP_PIN, GPIO.LOW)
@@ -852,10 +908,14 @@ def kill_chromium():
 # 명령어 실행 api
 @app.route('/handle/power', methods=['POST'])
 def handlePower():
+    global led_manual_override_until, fan_manual_override_until
     try:
         data = request.json
         device = data.get('device')
-        duration = data.get('duration', 1)  # 기본 동작 시간 1초
+        action = data.get('action')  # "ON" | "OFF" | None(toggle)
+        duration = data.get('duration', 1)
+        override_sec = data.get('override_duration_sec')  # 웹에서 설정한 유지 시간(초)
+        effective_override_sec = int(override_sec) if override_sec is not None else MANUAL_OVERRIDE_DURATION_SEC
         new_state = "OFF"
 
         if device == "lcd_display":
@@ -882,17 +942,27 @@ def handlePower():
         elif device == "led_light":
             try:
                 if POWER_CONTROL_MODE == "relay":
-                    new_is_on = relay_toggle(RELAY_LED_PIN)
-                    new_state = "ON" if new_is_on else "OFF"
-                    logging.info(f"LED Light 토글 [relay]: {new_state}")
-                else:
-                    is_on = asyncio.run(get_device_info(ip_address_light))
-                    if is_on.device_on:
-                        asyncio.run(device_off(ip_address_light))
+                    if action == "ON":
+                        relay_on(RELAY_LED_PIN)
+                        new_state = "ON"
+                    elif action == "OFF":
+                        relay_off(RELAY_LED_PIN)
                         new_state = "OFF"
                     else:
+                        new_is_on = relay_toggle(RELAY_LED_PIN)
+                        new_state = "ON" if new_is_on else "OFF"
+                    logging.info(f"LED Light {'ON' if action == 'ON' else 'OFF' if action == 'OFF' else '토글'} [relay]: {new_state}")
+                else:
+                    is_on = asyncio.run(get_device_info(ip_address_light))
+                    turn_on = True if action == "ON" else False if action == "OFF" else not is_on.device_on
+                    if turn_on:
                         asyncio.run(device_on(ip_address_light))
                         new_state = "ON"
+                    else:
+                        asyncio.run(device_off(ip_address_light))
+                        new_state = "OFF"
+                led_manual_override_until = datetime.now() + timedelta(seconds=effective_override_sec)
+                logging.info(f"LED manual override 설정: {effective_override_sec}초간 자동제어 중단")
             except Exception as e:
                 logging.error(f"LED Light 제어 오류: {e}")
                 return jsonify({"status": "error", "message": "LED Light 제어 실패"}), 500
@@ -900,18 +970,28 @@ def handlePower():
         elif device == "fan":
             try:
                 if POWER_CONTROL_MODE == "relay":
-                    new_is_on = relay_toggle(RELAY_FAN_PIN)
-                    new_state = "ON" if new_is_on else "OFF"
-                    logging.info(f"Fan 토글 [relay]: {new_state}")
-                else:
-                    fan_is_on = asyncio.run(get_device_info(ip_address_fan))
-                    if fan_is_on.device_on:
-                        asyncio.run(device_off(ip_address_fan))
+                    if action == "ON":
+                        relay_on(RELAY_FAN_PIN)
+                        new_state = "ON"
+                    elif action == "OFF":
+                        relay_off(RELAY_FAN_PIN)
                         new_state = "OFF"
                     else:
+                        new_is_on = relay_toggle(RELAY_FAN_PIN)
+                        new_state = "ON" if new_is_on else "OFF"
+                    logging.info(f"Fan {'ON' if action == 'ON' else 'OFF' if action == 'OFF' else '토글'} [relay]: {new_state}")
+                else:
+                    fan_is_on = asyncio.run(get_device_info(ip_address_fan))
+                    turn_on = True if action == "ON" else False if action == "OFF" else not fan_is_on.device_on
+                    if turn_on:
                         asyncio.run(device_on(ip_address_fan))
                         new_state = "ON"
+                    else:
+                        asyncio.run(device_off(ip_address_fan))
+                        new_state = "OFF"
                     logging.info(f"Tapo Fan 정보: {fan_is_on}")
+                fan_manual_override_until = datetime.now() + timedelta(seconds=effective_override_sec)
+                logging.info(f"FAN manual override 설정: {effective_override_sec}초간 자동제어 중단")
             except Exception as e:
                 logging.error(f"Fan 제어 오류: {e}")
                 return jsonify({"status": "error", "message": "Fan 제어 실패"}), 500
@@ -989,7 +1069,7 @@ def update_count():
                 font = '00'
                 weight = '01'
                 eff = '090009000900'
-                ysz = '2'
+                ysz = LED_YSZ
                 fix = 1
                 dly_interval = 60000
                 start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, 20)

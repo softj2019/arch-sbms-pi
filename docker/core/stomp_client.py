@@ -54,6 +54,10 @@ ip_address_light = os.getenv("IP_ADDRESS_LED")
 ip_address_fan = os.getenv("IP_ADDRESS_FAN")
 original_str = os.getenv("ORIGINAL_STR")
 
+# 전원 제어 모드: relay 이면 IP 기반 헬스체크 비활성화
+_STATION_TYPE = os.getenv("STATION_TYPE", "standard").lower()
+_POWER_CONTROL_MODE = "relay" if _STATION_TYPE == "smartpole" else os.getenv("POWER_CONTROL_MODE", "tapo").lower()
+
 # cv_power: 기동 시 단 1회 RTSP 연결 시도 대신 cv2_ffmpeg 서비스 상태로 동적 판단
 # (collect_system_info 내에서 cv2_ffmpeg_status 확인 후 덮어씀)
 
@@ -116,8 +120,23 @@ async def ping_device(ip):
         logging.error(f"Ping test failed for {ip}: {e}")
         return False
     
+def _get_relay_states():
+    """relay 모드: 로컬 API에서 실제 GPIO 릴레이 상태 조회"""
+    try:
+        api_url = os.getenv("API_URL", "http://localhost:5000")
+        resp = requests.get(f"{api_url}/screen_status", timeout=2)
+        if resp.status_code == 200:
+            gpio = resp.json().get("screen_status", {}).get("motor_gpio", {})
+            return gpio.get("LED", "N/A"), gpio.get("FAN", "N/A")
+    except Exception:
+        pass
+    return "N/A", "N/A"
+
 # tapo 팬장치 상태 확인
 async def get_fan_info():
+    if _POWER_CONTROL_MODE == "relay":
+        _, fan = await asyncio.to_thread(_get_relay_states)
+        return fan
     try:
         if not await ping_device(ip_address_fan):
             logging.warning(f"get_fan_info: ping 통신 실패: ({ip_address_fan}")
@@ -133,6 +152,9 @@ async def get_fan_info():
 
 # tapo 조명장치 상태 확인
 async def get_light_info():
+    if _POWER_CONTROL_MODE == "relay":
+        led, _ = await asyncio.to_thread(_get_relay_states)
+        return led
     try:
         if not await ping_device(ip_address_light):
             logging.warning(f"get_light_info: ping 통신 실패: ({ip_address_light}")
