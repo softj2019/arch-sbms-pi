@@ -266,13 +266,15 @@ async def stomp_req_client(url):
                                     await websocket.send(send_frame)
                                     logging.info("[screen_action] action result published. success=%s payload=%s", success, result_payload)
                                 elif "destination:/topic/power/action" in headers:
-                                    # 서버가 "status" 필드로 ON/OFF를 전송하므로 fallback으로 읽음
+                                    # action 없으면 status fallback; 둘 다 없으면 toggle 의도
                                     power_action = message.get("action") or message.get("status")
                                     override_duration_sec = message.get("override_duration_sec")
                                     logging.info(f"Executing power action: device={device} action={power_action} override={override_duration_sec}s raw={message}")
-                                    if power_action is None:
-                                        logging.info("power action 없음 (override 전용 메시지) - 릴레이 제어 스킵")
+                                    if power_action is None and override_duration_sec is None:
+                                        # 방향도 override도 없는 메시지는 무시
+                                        logging.info("power action 없음 (방향·override 모두 없음) - 스킵")
                                     elif power_action_task is None or power_action_task.done():
+                                        # power_action=None이면 /handle/power에서 toggle로 처리됨
                                         power_action_task = asyncio.create_task(run_handle_power_action(device, power_action, override_duration_sec))
                                     else:
                                         logging.info("이전 power action이 아직 실행 중입니다. 새로운 호출을 건너뜁니다.")
