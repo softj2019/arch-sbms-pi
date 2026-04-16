@@ -652,16 +652,7 @@ def encode_to_protocol(message, default_template, color="00", font="00", weight=
     TYPE = 0x84  # 광고 추가
     # template = "LNE=1,YSZ=2,EFF=090009000900,TXT=$C00$F00$W01$A00{}"
 
-    if not message:
-        formatted_message = default_template
-    elif LED_LINES >= 2:
-        # 2라인 전광판: 시계 포맷과 동일하게 $f$c 순서, $w/$A00 제거
-        formatted_message = (
-            f"RST=1,LNE=1,YSZ={ysz},SPD=3,DLY={dly_interval},FIX={fix},EFF={eff},NEN=0,TXT=$f{font}$c{color} {message} ,"
-            f"RST=1,LNE=2,YSZ={ysz},SPD=3,DLY={dly_interval},FIX={fix},EFF={eff},NEN=0,TXT=$f{font}$c{color} {message} "
-        )
-    else:
-        formatted_message = f"RST=1,LNE=1,FIX={fix},YSZ={ysz},EFF={eff},NEN=0,DLY={dly_interval},TXT=$c{color}$f{font}$w{weight}$A00{message}"
+    formatted_message = default_template if not message else f"RST=1,LNE=1,FIX={fix},YSZ={ysz},EFF={eff},NEN=0,DLY={dly_interval},TXT=$c{color}$f{font}$w{weight}$A00{message}"
     encoded_data = formatted_message.encode('utf-16le')  # 하위 바이트 우선
     length = len(encoded_data).to_bytes(2, byteorder='little')
 
