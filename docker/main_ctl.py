@@ -1085,7 +1085,7 @@ def update_count():
                 font = '00'
                 weight = '01'
                 eff = '090009000900'
-                ysz = LED_YSZ
+                ysz = '2'
                 fix = 1
                 dly_interval = 60000
                 start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, 20)
