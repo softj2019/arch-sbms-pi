@@ -24,6 +24,9 @@ import RPi.GPIO as GPIO
 
 DEFAULT_API_URL = "http://localhost:5000/update_count"
 DEFAULT_BCM_PIN = 7  # physical pin 26
+DEFAULT_MESSAGE = "교통약자"
+DEFAULT_SOURCE = "button"
+DEFAULT_COLOR = "01"
 
 running = True
 
@@ -48,6 +51,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Count value to send in the JSON payload. Default: 1.",
+    )
+    parser.add_argument(
+        "--message",
+        default=DEFAULT_MESSAGE,
+        help=f"Message override sent to update_count. Default: {DEFAULT_MESSAGE}",
+    )
+    parser.add_argument(
+        "--source",
+        default=DEFAULT_SOURCE,
+        help=f"Source tag sent to update_count. Default: {DEFAULT_SOURCE}",
+    )
+    parser.add_argument(
+        "--color",
+        default=DEFAULT_COLOR,
+        help=f"Color code sent to update_count. Default: {DEFAULT_COLOR}",
     )
     parser.add_argument(
         "--timeout",
@@ -87,8 +105,8 @@ def handle_signal(signum, _frame) -> None:
     running = False
 
 
-def trigger(api_url: str, count: int, timeout: float, dry_run: bool) -> None:
-    payload = {"count": count}
+def trigger(api_url: str, count: int, message: str, source: str, color: str, timeout: float, dry_run: bool) -> None:
+    payload = {"count": count, "message": message, "source": source, "color": color}
 
     if dry_run:
         logging.info("dry-run trigger: POST %s payload=%s", api_url, payload)
@@ -110,7 +128,7 @@ def process_trigger_cycle(args: argparse.Namespace, use_edge_wait: bool) -> None
         return
 
     try:
-        trigger(args.api_url, args.count, args.timeout, args.dry_run)
+        trigger(args.api_url, args.count, args.message, args.source, args.color, args.timeout, args.dry_run)
     except Exception as exc:
         logging.error("trigger failed: %s", exc)
 
