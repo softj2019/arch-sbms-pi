@@ -296,6 +296,10 @@ def start_fan_auto_control():
             if not _fan_override_logged and fan_manual_override_until is not None:
                 logging.info("start_fan_auto_control: manual override 만료 - 자동제어 복귀")
                 _fan_override_logged = True
+            if ENV_TYPE == 'dev':
+                logging.debug("start_fan_auto_control: dev 모드 - 자동제어 스킵")
+                await asyncio.sleep(10)
+                continue
             try:
                 t1h = float(config_cache.get("t1h", "0"))
                 fan_temp = float(config_cache.get("fanTemperature", "100"))
@@ -454,6 +458,11 @@ async def schedule_device_control(ip_or_pin):
         if not _led_override_logged and led_manual_override_until is not None:
             logging.info("schedule_device_control: manual override 만료 - 자동제어 복귀")
             _led_override_logged = True
+
+        if ENV_TYPE == 'dev':
+            logging.debug("schedule_device_control: dev 모드 - 스케줄 제어 스킵")
+            await asyncio.sleep(3)
+            continue
 
         on_time, off_time = get_on_off_times()
 
