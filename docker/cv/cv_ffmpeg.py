@@ -15,6 +15,7 @@ import urllib.parse
 import atexit
 import signal
 import sys
+import threading
 import websockets
 import asyncio
 import subprocess
@@ -109,8 +110,36 @@ stat_people_count = load_stat_count()
 last_reset_date = datetime.now().date()
 previous_count = 0
 
-def handle_exit(sig=None, frame=None):
+# ── RCWL-0516 레이더 융합 ─────────────────────────────────────
+RADAR_PIN = int(os.getenv("RADAR_GPIO_PIN", "3"))
+RADAR_HOLDTIME = float(os.getenv("RADAR_HOLDTIME", "3.0"))  # 센서 홀드타임(초)
+RADAR_FALLBACK_INTERVAL = float(os.getenv("RADAR_FALLBACK_INTERVAL", "15.0"))  # 레이더 없을 때 폴링 주기
 
+_radar_event = threading.Event()
+
+def _radar_callback(channel):
+    logger.debug(f"RCWL-0516 감지 (GPIO{channel})")
+    _radar_event.set()
+
+try:
+    import RPi.GPIO as GPIO
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    GPIO.setup(RADAR_PIN, GPIO.IN)
+    GPIO.add_event_detect(RADAR_PIN, GPIO.RISING, callback=_radar_callback, bouncetime=300)
+    RADAR_ENABLED = True
+    logger.info(f"✅ RCWL-0516 레이더 활성화 (GPIO{RADAR_PIN})")
+except Exception as e:
+    RADAR_ENABLED = False
+    logger.warning(f"⚠️ RCWL-0516 초기화 실패 - 폴링 모드로 동작: {e}")
+
+def handle_exit(sig=None, frame=None):
+    if RADAR_ENABLED:
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.cleanup()
+        except Exception:
+            pass
     save_stat_count(stat_people_count)
     sys.exit(0)
 
@@ -139,6 +168,14 @@ async def send_stomp_message(destination, message, max_retries=3):
                 logger.error("❌ STOMP 전송 최종 실패")
 
 while True:
+    # 레이더 감지 대기 (타임아웃 시 폴링 폴백)
+    if RADAR_ENABLED:
+        triggered = _radar_event.wait(timeout=RADAR_FALLBACK_INTERVAL)
+        _radar_event.clear()
+        if triggered:
+            logger.info("🎯 레이더 트리거 → 카메라 추론 시작")
+        else:
+            logger.debug("⏱ 레이더 무신호 - 폴링 폴백 추론")
     try:
         # 1. 이미지 캡처 (1프레임만 저장)
         ffmpeg_cmd = [
@@ -231,4 +268,7 @@ while True:
     except Exception as e:
         logger.exception(f"❌ 오류 발생: {e}")
 
-    time.sleep(3)  # 3초 대기
+    if not RADAR_ENABLED:
+        time.sleep(3)  # 레이더 없으면 기존 폴링 유지
+    else:
+        time.sleep(RADAR_HOLDTIME)  # 레이더 홀드타임 동안 대기 (중복 트리거 방지)
