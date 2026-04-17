@@ -1177,8 +1177,8 @@ def display_default_message():
 
                 if LED_LINES >= 2:
                     default_message = (
-                        f"RST=1,LNE=1,YSZ={LED_YSZ},SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h2}·{m2} ,"
-                        f"RST=1,LNE=2,YSZ={LED_YSZ},SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h1}·{m1} "
+                        f"RST=1,LNE=1,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h2}·{m2} ,"
+                        f"RST=1,LNE=2,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h1}·{m1} "
                     )
                 else:
                     default_message = (
