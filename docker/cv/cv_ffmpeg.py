@@ -737,10 +737,13 @@ INFER_WIDTH = int(os.getenv("INFER_WIDTH", "416"))
 def infer_once(frame, state: AppState) -> list:
     t0 = time.time()
     h, w = frame.shape[:2]
+    scale = 1.0
     if w > INFER_WIDTH:
         scale = INFER_WIDTH / w
-        frame = cv2.resize(frame, (INFER_WIDTH, int(h * scale)))
-    results = model.predict(frame, conf=0.4, imgsz=INFER_WIDTH)
+        frame_resized = cv2.resize(frame, (INFER_WIDTH, int(h * scale)))
+    else:
+        frame_resized = frame
+    results = model.predict(frame_resized, conf=0.4, imgsz=INFER_WIDTH)
     elapsed = time.time() - t0
     alpha = 0.1
     fps = 1.0 / elapsed if elapsed > 0 else 0.0
@@ -751,6 +754,8 @@ def infer_once(frame, state: AppState) -> list:
     for box in results[0].boxes.data:
         x1, y1, x2, y2, conf, cls_id = box.tolist()
         x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+        if scale < 1.0:
+            x1, y1, x2, y2 = int(x1 / scale), int(y1 / scale), int(x2 / scale), int(y2 / scale)
         class_id = int(cls_id)
         if class_id != 0:
             continue
