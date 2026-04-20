@@ -21,14 +21,21 @@ def post_radar(active: bool):
         logger.info(f"[SKIP] radar active={active}")
         return
     def _send():
-        try:
-            count = 1 if active else 0
-            requests.post(f"{API_URL}/update_count",
-                          json={"count": count, "source": "radar"},
-                          timeout=10)
-            logger.info(f"[POST] update_count count={count} (radar active={active})")
-        except Exception as e:
-            logger.warning(f"POST 실패: {e}")
+        count = 1 if active else 0
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                requests.post(f"{API_URL}/update_count",
+                              json={"count": count, "source": "radar"},
+                              timeout=10)
+                logger.info(f"[POST] update_count count={count} (radar active={active})")
+                return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"POST 재시도 {attempt + 1}/{max_retries - 1}: {e}")
+                    time.sleep(0.5)  # 500ms 대기 후 재시도
+                else:
+                    logger.warning(f"POST 실패 (최종): {e}")
     threading.Thread(target=_send, daemon=True).start()
 
 

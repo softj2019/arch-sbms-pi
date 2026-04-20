@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import websockets
 import RPi.GPIO as GPIO
 import time
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 import serial
 import logging
 import psutil
@@ -232,7 +232,10 @@ def clear_waiting_state(reason: str):
         "action": last_screen_action or "STOP",
         "terminalId": TERMINAL_ID
     })
-    asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
+    if STATION_TYPE != 'smartpole':
+        asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
+    else:
+        logging.info("smartpole mode - screen/action message skipped")
 
 
 def people_detection_watchdog():
@@ -1058,16 +1061,19 @@ def handlePower():
             return jsonify({"status": "error", "message": "Invalid device"}), 400
 
         # STOMP 메시지 전송
-        try:
-            message = json.dumps({
-                "status": new_state,
-                "device": device,
-                "terminalId": TERMINAL_ID
-            })
-            asyncio.run(send_stomp_message("/topic/power/action", message, PROD_WEBSOCKET_URL))
-        except Exception as e:
-            logging.error(f" STOMP 메시지 전송 오류: {e}")
-            return jsonify({"status": "error", "message": "STOMP 메시지 전송 실패"}), 500
+        if STATION_TYPE != 'smartpole':
+            try:
+                message = json.dumps({
+                    "status": new_state,
+                    "device": device,
+                    "terminalId": TERMINAL_ID
+                })
+                asyncio.run(send_stomp_message("/topic/power/action", message, PROD_WEBSOCKET_URL))
+            except Exception as e:
+                logging.error(f" STOMP 메시지 전송 오류: {e}")
+                return jsonify({"status": "error", "message": "STOMP 메시지 전송 실패"}), 500
+        else:
+            logging.info(f"smartpole mode - power/action message skipped")
 
         return jsonify({"status": new_state, "device": device, "duration": duration}), 200
 
@@ -1134,8 +1140,11 @@ def update_count():
                     "terminalId": TERMINAL_ID
                 })
                 cv_count_screen_action = 1
-                asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
-                logging.info("STOP message sent to STOMP server.")
+                if STATION_TYPE != 'smartpole':
+                    asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
+                    logging.info("STOP message sent to STOMP server.")
+                else:
+                    logging.info("smartpole mode - STOP message skipped")
             elif request_source == "button" and request_message:
                 show_waiting_message(display_message, display_color, duration=20, force_replace=True)
                 logging.info("update_count: button waiting message applied: '%s'", display_message)
@@ -1339,6 +1348,13 @@ def shutdown():
         raise RuntimeError('Not running with the Werkzeug Server')
     func()
     return 'Server shutting down...'
+
+
+@app.route('/camera')
+def camera():
+    """웹 기반 카메라 스트림 플레이어"""
+    template_path = os.path.join(os.path.dirname(__file__), 'templates')
+    return send_from_directory(template_path, 'camera.html')
 
 
 # WebSocket 연결 상태 왓치독

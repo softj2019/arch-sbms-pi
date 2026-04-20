@@ -833,8 +833,11 @@ async def send_stomp_message(destination, message, max_retries=3):
 state = AppState(stat_people_count=load_stat_count())
 last_reset_date = datetime.now().date()
 
-radar_src = make_radar_source()
-radar_src.start()
+if SENSOR_MODE == "camera":
+    radar_src = DisabledRadarSource()
+else:
+    radar_src = make_radar_source()
+    radar_src.start()
 RADAR_ENABLED = isinstance(radar_src, GpioRadarSource) and radar_src._enabled
 
 cap_src = make_capture_source()
