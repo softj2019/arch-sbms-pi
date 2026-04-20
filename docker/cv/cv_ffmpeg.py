@@ -909,7 +909,8 @@ while True:
         count, src = decide_count(len(boxes), state, radar_triggered)
         state.source = src if src else state.source
 
-        if ENV_TYPE == "dev":
+        env_type = os.getenv("ENV_TYPE", "prod").lower()
+        if env_type == "dev":
             annotated = annotate(frame, boxes, state)
             state.last_frame_annotated = annotated
 
