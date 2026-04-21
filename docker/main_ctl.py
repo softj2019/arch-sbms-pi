@@ -60,6 +60,7 @@ display_thread_stop = threading.Event()
 message_thread = None
 message_thread_stop = threading.Event()
 people_count = 0
+current_waiting_message = ""
 
 # Flask 로그에서 특정 end point 요청을 무시하는 filter
 class EndpointFilter(logging.Filter):
@@ -215,7 +216,7 @@ def ensure_default_display_running():
 
 def clear_waiting_state(reason: str):
     """Return to the clock when occupancy is no longer considered active."""
-    global cv_count_screen_action, last_people_detected_at
+    global cv_count_screen_action, last_people_detected_at, current_waiting_message
 
     if cv_count_screen_action != 1:
         return
@@ -223,6 +224,7 @@ def clear_waiting_state(reason: str):
     message_thread_stop.set()
     cv_count_screen_action = 0
     last_people_detected_at = None
+    current_waiting_message = ""
     logging.info(f"clear_waiting_state: {reason}")
     ensure_default_display_running()
 
@@ -324,6 +326,37 @@ def get_decoded_message(raw_message: str | None) -> str:
         except Exception as e:
             logging.warning(f"get_decoded_message: 유니코드 디코딩 실패: {e}")
     return raw_message
+
+
+def show_waiting_message(message: str, color: str = "00", duration: int = 20, force_replace: bool = False) -> None:
+    """Display or replace the current waiting message on the LED panel."""
+    global current_waiting_message, message_thread
+
+    color = color or "00"
+    font = "00"
+    weight = "01"
+    eff = "090009000900"
+    ysz = "2"
+    fix = 1
+    dly_interval = 60000
+
+    if force_replace and message_thread and message_thread.is_alive():
+        if current_waiting_message == message:
+            logging.info("show_waiting_message: same waiting message already active")
+            return
+
+        logging.info(
+            "show_waiting_message: replacing active message '%s' -> '%s'",
+            current_waiting_message,
+            message,
+        )
+        message_thread_stop.set()
+        if threading.current_thread() is not message_thread:
+            message_thread.join(timeout=2)
+        message_thread = None
+
+    current_waiting_message = message
+    start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, duration)
 
 
 # 30초 추기로 STOMP 기반 설정값 업데이트
@@ -672,6 +705,22 @@ def encode_to_protocol(message, default_template, color="00", font="00", weight=
     return command
 
 serial_lock = threading.Lock()
+
+# 광고 초기화 RST 패킷 전송 (2라인 전송 전 먼저 호출)
+def send_led_reset():
+    STX = 0x02
+    ETX = 0x03
+    TYPE = 0x84
+    reset_msg = "RST=1"
+    encoded = reset_msg.encode('utf-16le')
+    length = len(encoded).to_bytes(2, byteorder='little')
+    header = bytes([STX, TYPE]) + length
+    data = header + encoded
+    checksum = calculate_checksum(data)
+    command = data + bytes([checksum]) + bytes([ETX])
+    logging.info("send_led_reset: 광고 초기화 RST 전송")
+    send_command(command)
+    time.sleep(0.1)
 
 # 명령어 전달
 def send_command(command):
@@ -1050,29 +1099,23 @@ def update_count():
         return jsonify({"status": "error", "message": "Emergency mode activated. Stopping update_count."}), 200
     try:
 
-        # 클라이언트에서 전송된 데이터 처리
+        # 클라이언트에서 전송��� 데이터 처리
         data = request.json
         detected_people_count = data.get('count', 0)
+        request_source = data.get("source", "cv")
+        request_message = get_decoded_message(data.get("message")) if data.get("message") else None
+        request_color = data.get("color")
 
         # 인원수가 0보다 큰 경우 메시지 전송
         if detected_people_count > 0:
             last_people_detected_at = datetime.now()
+            raw_display_message = config_cache.get("ledMessage")
+            display_message = request_message or get_decoded_message(raw_display_message)
+            display_color = request_color or config_cache.get("ledFontColor", "00")
+
             if cv_count_screen_action == 0:
                 stop_default_display()
-                # "승차대기" 메시지 전송 (최초 감지시에만)
-                raw_display_message = config_cache.get("ledMessage")
-                display_message = get_decoded_message(raw_display_message)
-                display_color = config_cache.get("ledFontColor", "00")
-                message = display_message
-
-                color = display_color or '00'
-                font = '00'
-                weight = '01'
-                eff = '090009000900'
-                ysz = LED_YSZ
-                fix = 1
-                dly_interval = 60000
-                start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, 20)
+                show_waiting_message(display_message, display_color, duration=20)
 
                 # 재실인원 최초 감지시에만 모터 STOP 전송
                 activate_command("STOP", 0.1)
@@ -1084,8 +1127,10 @@ def update_count():
                 cv_count_screen_action = 1
                 asyncio.run(send_stomp_message("/topic/screen/action", stop_message, PROD_WEBSOCKET_URL))
                 logging.info("STOP message sent to STOMP server.")
+            elif request_source == "button" and request_message:
+                show_waiting_message(display_message, display_color, duration=20, force_replace=True)
+                logging.info("update_count: button waiting message applied: '%s'", display_message)
             else:
-                # cv_count_screen_action==1: 재실감지 유지 중 - 승차대기 유지, 아무것도 안 함
                 logging.info("update_count: people detected, waiting message already displayed. skip.")
 
         else:
@@ -1132,8 +1177,8 @@ def display_default_message():
 
                 if LED_LINES >= 2:
                     default_message = (
-                        f"RST=1,LNE=1,YSZ={LED_YSZ},SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h2}·{m2} ,"
-                        f"RST=1,LNE=2,YSZ={LED_YSZ},SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h1}·{m1} "
+                        f"RST=1,LNE=1,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h2}·{m2} ,"
+                        f"RST=1,LNE=2,YSZ=1,SPD=3,DLY={dly_interval},FIX=1,EFF=090009000900,NEN=0,TXT=$f01$c00 {h1}·{m1} "
                     )
                 else:
                     default_message = (
@@ -1155,34 +1200,37 @@ def display_default_message():
 def start_message_with_timeout(message, color="00", font="00", weight="01", eff="090009000900", ysz="2", fix=1,
                                dly_interval=60000, duration=60):
     def message_worker():
+        global message_thread
         start_time = datetime.now()
         logging.info(f"start_message_with_timeout: 메시지 스레드 시작됨: '{message}' (유지시간: {duration}s)")
 
-        command = encode_to_protocol(message, "", color, font, weight, eff, ysz, fix, dly_interval)
-        send_command(command)
-        logging.info(f"start_message_with_timeout: 메시지 전송 완료: '{message}'")
+        try:
+            if LED_LINES >= 2:
+                send_led_reset()
+            command = encode_to_protocol(message, "", color, font, weight, eff, ysz, fix, dly_interval)
+            send_command(command)
+            logging.info(f"start_message_with_timeout: 메시지 전송 완료: '{message}'")
 
-        # 2. 설정된 유지 시간 동안 대기
-        while not message_thread_stop.is_set():
-            elapsed = (datetime.now() - start_time).total_seconds()
-            if elapsed > duration:
-                logging.info(f"start_message_with_timeout: 메시지 유지시간 초과됨: '{message}'")
+            while not message_thread_stop.is_set():
+                elapsed = (datetime.now() - start_time).total_seconds()
+                if elapsed > duration:
+                    logging.info(f"start_message_with_timeout: 메시지 유지시간 초과됨: '{message}'")
 
-                # cv_count_screen_action 상태 확인
-                if cv_count_screen_action == 1:
-                    # 재실인원 유지 중 - 승차대기 다시 전송
-                    logging.info(f"start_message_with_timeout: 재실감지 유지 중, 승차대기 재전송: '{message}'")
-                    new_command = encode_to_protocol(message, "", color, font, weight, eff, ysz, fix, dly_interval)
-                    send_command(new_command)
-                    # 같은 스레드에서 타이머만 리셋해 재전송한다.
-                    start_time = datetime.now()
-                    continue
-                else:
-                    # 인원 0 - 시계 표시
+                    if cv_count_screen_action == 1:
+                        logging.info(f"start_message_with_timeout: 재실감지 유지 중, 메시지 재전송: '{message}'")
+                        if LED_LINES >= 2:
+                            send_led_reset()
+                        new_command = encode_to_protocol(message, "", color, font, weight, eff, ysz, fix, dly_interval)
+                        send_command(new_command)
+                        start_time = datetime.now()
+                        continue
+
                     ensure_default_display_running()
                     break
 
-            time.sleep(1)
+                time.sleep(1)
+        finally:
+            message_thread = None
 
     global message_thread
     if message_thread and message_thread.is_alive():
