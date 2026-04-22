@@ -1,7 +1,7 @@
 # SBMS-PI 버스 정류장 통합제어 시스템 아키텍처
 
-> 최종 업데이트: 2026-04-13  
-> 브랜치: prod / 대상: 25개 정류장 라즈베리파이
+> 최종 업데이트: 2026-04-22  
+> 브랜치: dev-new / 대상: 25개 정류장 라즈베리파이
 
 ---
 
@@ -84,6 +84,57 @@
 
 ---
 
+## 원격 터널 접속 구조 (2026-04-22 추가)
+
+```
+개발PC (Windows)
+  │
+  │  ssh -o ProxyJump="my@58.121.142.83:2222" -p 20022 admin@127.0.0.1
+  ▼
+archivsoft (58.121.142.83:2222)  ← 중계 서버 (WSL2)
+  │  GatewayPorts yes
+  │  0.0.0.0:20022 LISTEN (역방향 터널 포트)
+  ▼
+역방향 터널 (Pi → archivsoft, autossh)
+  │  reverse-tunnel.service (systemd, Restart=always)
+  │  autossh -R 0.0.0.0:20022:localhost:22 my@58.121.142.83 -p 2222
+  ▼
+Pi 장비 (sola-1 등) :22
+```
+
+### Pi 원격 접속 방법
+
+```bash
+# ProxyJump 경유 접속
+ssh -o ProxyJump="my@58.121.142.83:2222" -p 20022 admin@127.0.0.1
+
+# ~/.ssh/config 등록 후
+ssh sola-tunnel
+```
+
+### Pi 서비스 현황 (sola-1 기준)
+
+| 서비스 | 포트 | 설명 |
+|--------|------|------|
+| `reverse-tunnel` | 20022 | archivsoft 역방향 SSH 터널 (autossh) |
+| `rpi-connect` | - | Raspberry Pi Connect 원격 접속 (로그인됨) |
+| `wayvnc` | 5900 | Wayland VNC 서버 |
+| `main_ctl` | 5000 | Flask 메인 제어 서버 |
+
+### ~/.ssh/config (개발PC)
+
+```
+Host sola-tunnel
+    HostName 127.0.0.1
+    Port 20022
+    User admin
+    ProxyJump my@58.121.142.83:2222
+    IdentityFile ~/.ssh/id_ed25519
+    StrictHostKeyChecking no
+```
+
+---
+
 ## 주요 IP 맵
 
 | 구분 | IP/URL | 포트 | 용도 |
@@ -91,6 +142,8 @@
 | 중앙 운영서버 | 175.45.215.53 | 80 | WebSocket/STOMP/REST |
 | 개발 서버 | 10.0.0.217 | 8080 | DEV WebSocket |
 | Jump Host | 192.168.10.107 | 22 | SSH 배포 게이트웨이 |
+| 원격 중계 서버 | 58.121.142.83 | 2222 | 역방향 터널 중계 (archivsoft WSL2) |
+| sola-1 역터널 | 58.121.142.83 | 20022 | Pi 원격 접속 포트 |
 | RTSP 카메라 | 192.168.10.110 | 554 | YOLO 인원 감지 |
 | LED 조명 | 192.168.10.103 | Tapo | 스마트 조명 |
 | 팬 | 192.168.10.104 | Tapo | 스마트 팬 |
