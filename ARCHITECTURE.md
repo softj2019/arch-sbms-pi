@@ -125,6 +125,16 @@ ssh sola-tunnel
 > - `vncserver-x11-serviced` (RealVNC) 비활성화 — Wayland 세션 접근 불가 문제  
 > - `wayvnc` TCP 0.0.0.0:5900 직접 리스닝으로 전환 — Wayland 화면 정상 공유
 
+> **venv 변경 이력 (2026-04-22)**  
+> - 기존: `gunpo-ori/venv` 공유 사용 (신버전 코드 + 구버전 venv 혼용)  
+> - 변경: `/home/admin/gunpo/venv` 신규 생성 — `requirements.txt` 기준 설치  
+> - requirements.txt UTF-16LE 인코딩 → UTF-8 변환 후 재저장  
+> - opencv-python 별도 설치 필요 (stomp_rep_client.py cv2 의존)  
+> - torch/ultralytics는 미설치 (cv2_ffmpeg 전용, 별도 설치 필요)  
+> - 서비스 ExecStart python3 경로: `gunpo-ori/venv` → `gunpo/venv` 로 교체  
+>   - `/etc/systemd/system/main_ctl.service`  
+>   - `/etc/systemd/system/cv2_ffmpeg.service`
+
 ### VNC 원격 접속 방법
 
 ```
