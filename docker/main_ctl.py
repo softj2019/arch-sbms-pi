@@ -1435,8 +1435,9 @@ if __name__ == "__main__":
 
         # 프로세스 시작
         flask_process.start()
-        stomp_process.start()
-        stomp_req_client_process.start()
+        if STATION_TYPE != 'smartpole':
+            stomp_process.start()
+            stomp_req_client_process.start()
         ensure_default_display_running()
         thread.start()
         config_fetch_thread.start()
