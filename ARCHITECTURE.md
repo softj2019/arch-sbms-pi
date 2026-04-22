@@ -118,19 +118,51 @@ ssh sola-tunnel
 |--------|------|------|
 | `reverse-tunnel` | 20022 | archivsoft 역방향 SSH 터널 (autossh) |
 | `rpi-connect` | - | Raspberry Pi Connect 원격 접속 (로그인됨) |
-| `wayvnc` | 5900 | Wayland VNC 서버 |
+| `wayvnc` | 5900 | Wayland VNC 서버 (TCP, RealVNC 대체) |
 | `main_ctl` | 5000 | Flask 메인 제어 서버 |
+
+> **VNC 변경 이력 (2026-04-22)**  
+> - `vncserver-x11-serviced` (RealVNC) 비활성화 — Wayland 세션 접근 불가 문제  
+> - `wayvnc` TCP 0.0.0.0:5900 직접 리스닝으로 전환 — Wayland 화면 정상 공유
+
+### VNC 원격 접속 방법
+
+```
+개발PC VNC 클라이언트 → localhost:5900
+  → SSH 터널 → 58.121.142.83:2222
+    → Pi 역터널 20022
+      → Pi wayvnc :5900 (Wayland)
+```
+
+```bash
+# 1. VNC 터널 백그라운드 실행 (최초 1회)
+ssh -f -N sola-vnc
+
+# 2. VNC 클라이언트에서 접속
+#    주소: localhost  포트: 5900
+```
 
 ### ~/.ssh/config (개발PC)
 
 ```
+# SSH 접속
 Host sola-tunnel
     HostName 127.0.0.1
     Port 20022
     User admin
-    ProxyJump my@58.121.142.83:2222
+    ProxyJump archivsoft
     IdentityFile ~/.ssh/id_ed25519
     StrictHostKeyChecking no
+
+# VNC 터널 (localhost:5900 → Pi:5900)
+Host sola-vnc
+    HostName 127.0.0.1
+    Port 20022
+    User admin
+    ProxyJump archivsoft
+    IdentityFile ~/.ssh/id_ed25519
+    StrictHostKeyChecking no
+    LocalForward 5900 localhost:5900
 ```
 
 ---
