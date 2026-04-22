@@ -187,9 +187,41 @@ Host sola-vnc
 | 원격 중계 서버 | 58.121.142.83 | 2222 | 역방향 터널 중계 (archivsoft WSL2) |
 | sola-1 역터널 | 58.121.142.83 | 20022 | Pi 원격 접속 포트 |
 | RTSP 카메라 | 192.168.10.110 | 554 | YOLO 인원 감지 |
-| LED 조명 | 192.168.10.103 | Tapo | 스마트 조명 |
-| 팬 | 192.168.10.104 | Tapo | 스마트 팬 |
+| LED 조명 | 192.168.10.103 | Tapo | 스마트 조명 (standard 모드) |
+| 팬 | 192.168.10.104 | Tapo | 스마트 팬 (standard 모드) |
 | 각 정류장 Pi | 10.x.x.x (25개) | 22/5000 | SSH / Flask API |
+
+---
+
+## LED / FAN 제어 정의
+
+### POWER_CONTROL_MODE 분기
+
+| `STATION_TYPE` | `POWER_CONTROL_MODE` | LED 제어 | FAN 제어 |
+|---------------|----------------------|---------|---------|
+| `smartpole` | `relay` (강제) | GPIO 릴레이 pin 26 | GPIO 릴레이 pin 20 |
+| 그 외 | `.env` 값 (`tapo` 기본) | Tapo 192.168.10.103 | Tapo 192.168.10.104 |
+
+### 릴레이 핀 맵 (sola-1 / smartpole)
+
+| 채널 | GPIO 핀 (BCM) | 대상 | Active |
+|------|--------------|------|--------|
+| CH1 | pin 26 | LED 조명 | LOW |
+| CH2 | pin 20 | FAN | LOW |
+| CH3 | pin 21 | 예비 | LOW |
+
+> Active LOW — `relay_on(pin)` = GPIO LOW = 릴레이 ON
+
+### Flask API
+
+| 엔드포인트 | 파라미터 | 동작 |
+|-----------|---------|------|
+| `POST /handle/power` | `{"device":"led_light","action":"ON"}` | LED ON |
+| `POST /handle/power` | `{"device":"led_light","action":"OFF"}` | LED OFF |
+| `POST /handle/power` | `{"device":"fan","action":"ON"}` | FAN ON |
+| `POST /handle/power` | `{"device":"fan","action":"OFF"}` | FAN OFF |
+| `GET /gpio_status?pin=26` | - | LED 릴레이 상태 확인 |
+| `GET /gpio_status?pin=20` | - | FAN 릴레이 상태 확인 |
 
 ---
 
