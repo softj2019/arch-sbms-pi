@@ -58,6 +58,8 @@ jobs:
           git reset --hard origin/prod
           echo "Commit: $(git log --oneline -1)"
 
+          /home/admin/gunpo/venv/bin/pip install -q -r docker/requirements.txt
+
           sudo systemctl restart main_ctl
           sleep 3
           MAIN=$(systemctl is-active main_ctl)
