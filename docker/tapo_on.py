@@ -38,34 +38,47 @@ async def _connect(ip: str):
 
 # tapo 정보 조회
 async def get_device_info(ip: str) -> DeviceInfo:
+    dev = None
     try:
         dev = await _connect(ip)
+        await dev.update()
         device_on = dev.is_on
         return DeviceInfo(device_on=device_on)
     except Exception as e:
         logging.error(f"get_device_info: {_dev_name(ip)} 통신 실패: {e}")
         time.sleep(10)
         return DeviceInfo(device_on=False)
+    finally:
+        if dev:
+            await dev.disconnect()
 
 
 # tapo 전원 on
 async def device_on(ip: str) -> None:
+    dev = None
     try:
         dev = await _connect(ip)
         await dev.turn_on()
         logging.info(f"device_on: {_dev_name(ip)}")
     except Exception as e:
         logging.error(f"device_on: {_dev_name(ip)} 실패: {e}")
+    finally:
+        if dev:
+            await dev.disconnect()
 
 
 # tapo 전원 off
 async def device_off(ip: str) -> None:
+    dev = None
     try:
         dev = await _connect(ip)
         await dev.turn_off()
         logging.info(f"device_off: {_dev_name(ip)}")
     except Exception as e:
         logging.error(f"device_off: {_dev_name(ip)} 실패: {e}")
+    finally:
+        if dev:
+            await dev.disconnect()
 
 
 if __name__ == "__main__":
