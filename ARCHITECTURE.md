@@ -1,7 +1,7 @@
 # SBMS-PI 버스 정류장 통합제어 시스템 아키텍처
 
-> 최종 업데이트: 2026-04-13  
-> 브랜치: prod / 대상: 25개 정류장 라즈베리파이
+> 최종 업데이트: 2026-04-22  
+> 브랜치: dev-new / 대상: 25개 정류장 라즈베리파이
 
 ---
 
@@ -84,6 +84,99 @@
 
 ---
 
+## 원격 터널 접속 구조 (2026-04-22 추가)
+
+```
+개발PC (Windows)
+  │
+  │  ssh -o ProxyJump="my@58.121.142.83:2222" -p 20022 admin@127.0.0.1
+  ▼
+archivsoft (58.121.142.83:2222)  ← 중계 서버 (WSL2)
+  │  GatewayPorts yes
+  │  0.0.0.0:20022 LISTEN (역방향 터널 포트)
+  ▼
+역방향 터널 (Pi → archivsoft, autossh)
+  │  reverse-tunnel.service (systemd, Restart=always)
+  │  autossh -R 0.0.0.0:20022:localhost:22 my@58.121.142.83 -p 2222
+  ▼
+Pi 장비 (sola-1 등) :22
+```
+
+### Pi 원격 접속 방법
+
+```bash
+# ProxyJump 경유 접속
+ssh -o ProxyJump="my@58.121.142.83:2222" -p 20022 admin@127.0.0.1
+
+# ~/.ssh/config 등록 후
+ssh sola-tunnel
+```
+
+### Pi 서비스 현황 (sola-1 기준)
+
+| 서비스 | 포트 | 설명 |
+|--------|------|------|
+| `reverse-tunnel` | 20022 | archivsoft 역방향 SSH 터널 (autossh) |
+| `rpi-connect` | - | Raspberry Pi Connect 원격 접속 (로그인됨) |
+| `wayvnc` | 5900 | Wayland VNC 서버 (TCP, RealVNC 대체) |
+| `main_ctl` | 5000 | Flask 메인 제어 서버 |
+
+> **VNC 변경 이력 (2026-04-22)**  
+> - `vncserver-x11-serviced` (RealVNC) 비활성화 — Wayland 세션 접근 불가 문제  
+> - `wayvnc` TCP 0.0.0.0:5900 직접 리스닝으로 전환 — Wayland 화면 정상 공유
+
+> **venv 변경 이력 (2026-04-22)**  
+> - 기존: `gunpo-ori/venv` 공유 사용 (신버전 코드 + 구버전 venv 혼용)  
+> - 변경: `/home/admin/gunpo/venv` 신규 생성 — `requirements.txt` 기준 설치  
+> - requirements.txt UTF-16LE 인코딩 → UTF-8 변환 후 재저장  
+> - opencv-python 별도 설치 필요 (stomp_rep_client.py cv2 의존)  
+> - torch/ultralytics는 미설치 (cv2_ffmpeg 전용, 별도 설치 필요)  
+> - 서비스 ExecStart python3 경로: `gunpo-ori/venv` → `gunpo/venv` 로 교체  
+>   - `/etc/systemd/system/main_ctl.service`  
+>   - `/etc/systemd/system/cv2_ffmpeg.service`
+
+### VNC 원격 접속 방법
+
+```
+개발PC VNC 클라이언트 → localhost:5900
+  → SSH 터널 → 58.121.142.83:2222
+    → Pi 역터널 20022
+      → Pi wayvnc :5900 (Wayland)
+```
+
+```bash
+# 1. VNC 터널 백그라운드 실행 (최초 1회)
+ssh -f -N sola-vnc
+
+# 2. VNC 클라이언트에서 접속
+#    주소: localhost  포트: 5900
+```
+
+### ~/.ssh/config (개발PC)
+
+```
+# SSH 접속
+Host sola-tunnel
+    HostName 127.0.0.1
+    Port 20022
+    User admin
+    ProxyJump archivsoft
+    IdentityFile ~/.ssh/id_ed25519
+    StrictHostKeyChecking no
+
+# VNC 터널 (localhost:5900 → Pi:5900)
+Host sola-vnc
+    HostName 127.0.0.1
+    Port 20022
+    User admin
+    ProxyJump archivsoft
+    IdentityFile ~/.ssh/id_ed25519
+    StrictHostKeyChecking no
+    LocalForward 5900 localhost:5900
+```
+
+---
+
 ## 주요 IP 맵
 
 | 구분 | IP/URL | 포트 | 용도 |
@@ -91,10 +184,44 @@
 | 중앙 운영서버 | 175.45.215.53 | 80 | WebSocket/STOMP/REST |
 | 개발 서버 | 10.0.0.217 | 8080 | DEV WebSocket |
 | Jump Host | 192.168.10.107 | 22 | SSH 배포 게이트웨이 |
+| 원격 중계 서버 | 58.121.142.83 | 2222 | 역방향 터널 중계 (archivsoft WSL2) |
+| sola-1 역터널 | 58.121.142.83 | 20022 | Pi 원격 접속 포트 |
 | RTSP 카메라 | 192.168.10.110 | 554 | YOLO 인원 감지 |
-| LED 조명 | 192.168.10.103 | Tapo | 스마트 조명 |
-| 팬 | 192.168.10.104 | Tapo | 스마트 팬 |
+| LED 조명 | 192.168.10.103 | Tapo | 스마트 조명 (standard 모드) |
+| 팬 | 192.168.10.104 | Tapo | 스마트 팬 (standard 모드) |
 | 각 정류장 Pi | 10.x.x.x (25개) | 22/5000 | SSH / Flask API |
+
+---
+
+## LED / FAN 제어 정의
+
+### POWER_CONTROL_MODE 분기
+
+| `STATION_TYPE` | `POWER_CONTROL_MODE` | LED 제어 | FAN 제어 |
+|---------------|----------------------|---------|---------|
+| `smartpole` | `relay` (강제) | GPIO 릴레이 pin 26 | GPIO 릴레이 pin 20 |
+| 그 외 | `.env` 값 (`tapo` 기본) | Tapo 192.168.10.103 | Tapo 192.168.10.104 |
+
+### 릴레이 핀 맵 (sola-1 / smartpole)
+
+| 채널 | GPIO 핀 (BCM) | 대상 | Active |
+|------|--------------|------|--------|
+| CH1 | pin 26 | LED 조명 | LOW |
+| CH2 | pin 20 | FAN | LOW |
+| CH3 | pin 21 | 예비 | LOW |
+
+> Active LOW — `relay_on(pin)` = GPIO LOW = 릴레이 ON
+
+### Flask API
+
+| 엔드포인트 | 파라미터 | 동작 |
+|-----------|---------|------|
+| `POST /handle/power` | `{"device":"led_light","action":"ON"}` | LED ON |
+| `POST /handle/power` | `{"device":"led_light","action":"OFF"}` | LED OFF |
+| `POST /handle/power` | `{"device":"fan","action":"ON"}` | FAN ON |
+| `POST /handle/power` | `{"device":"fan","action":"OFF"}` | FAN OFF |
+| `GET /gpio_status?pin=26` | - | LED 릴레이 상태 확인 |
+| `GET /gpio_status?pin=20` | - | FAN 릴레이 상태 확인 |
 
 ---
 

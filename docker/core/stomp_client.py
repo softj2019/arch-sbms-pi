@@ -54,6 +54,13 @@ ip_address_light = os.getenv("IP_ADDRESS_LED")
 ip_address_fan = os.getenv("IP_ADDRESS_FAN")
 original_str = os.getenv("ORIGINAL_STR")
 
+# 전원 제어 모드: relay 이면 IP 기반 헬스체크 비활성화
+_STATION_TYPE = os.getenv("STATION_TYPE", "standard").lower()
+_POWER_CONTROL_MODE = "relay" if _STATION_TYPE == "smartpole" else os.getenv("POWER_CONTROL_MODE", "tapo").lower()
+
+# 카메라 타입: smartpole 또는 CAMERA_TYPE=usb 이면 "usb", 그 외 "ip"
+_CAMERA_TYPE = "usb" if (_STATION_TYPE == "smartpole" or os.getenv("CAMERA_TYPE", "").lower() == "usb") else "ip"
+
 # cv_power: 기동 시 단 1회 RTSP 연결 시도 대신 cv2_ffmpeg 서비스 상태로 동적 판단
 # (collect_system_info 내에서 cv2_ffmpeg_status 확인 후 덮어씀)
 
@@ -116,8 +123,23 @@ async def ping_device(ip):
         logging.error(f"Ping test failed for {ip}: {e}")
         return False
     
+def _get_relay_states():
+    """relay 모드: 로컬 API에서 실제 GPIO 릴레이 상태 조회"""
+    try:
+        api_url = os.getenv("API_URL", "http://localhost:5000")
+        resp = requests.get(f"{api_url}/screen_status", timeout=2)
+        if resp.status_code == 200:
+            gpio = resp.json().get("screen_status", {}).get("motor_gpio", {})
+            return gpio.get("LED", "N/A"), gpio.get("FAN", "N/A")
+    except Exception:
+        pass
+    return "N/A", "N/A"
+
 # tapo 팬장치 상태 확인
 async def get_fan_info():
+    if _POWER_CONTROL_MODE == "relay":
+        _, fan = await asyncio.to_thread(_get_relay_states)
+        return fan
     try:
         if not await ping_device(ip_address_fan):
             logging.warning(f"get_fan_info: ping 통신 실패: ({ip_address_fan}")
@@ -133,6 +155,9 @@ async def get_fan_info():
 
 # tapo 조명장치 상태 확인
 async def get_light_info():
+    if _POWER_CONTROL_MODE == "relay":
+        led, _ = await asyncio.to_thread(_get_relay_states)
+        return led
     try:
         if not await ping_device(ip_address_light):
             logging.warning(f"get_light_info: ping 통신 실패: ({ip_address_light}")
@@ -188,6 +213,16 @@ def get_git_version():
     except Exception:
         return ""
 
+def _get_mediamtx_stream_ready() -> str:
+    """mediamtx API 에서 'cam' 경로의 ready 상태를 조회한다."""
+    try:
+        resp = requests.get("http://localhost:9997/v3/paths/list", timeout=2)
+        paths = resp.json().get("items", [])
+        ready = any(p.get("name") == "cam" and p.get("ready") for p in paths)
+        return "ON" if ready else "OFF"
+    except Exception:
+        return "OFF"
+
 def get_uptime_seconds():
     try:
         import time
@@ -241,6 +276,15 @@ async def collect_system_info():
 
     # vc_power: cv2_ffmpeg 서비스 기동 여부로 판단 (기동 시 1회 RTSP 체크 방식 폐기)
     cv_power = "ON" if cv2_ffmpeg_status == "active" else "OFF"
+
+    # 카메라 타입 및 RTSP 스트림 정보
+    _rtsp_stream1_env = os.getenv("RTSP_STREAM1", "")
+    if _CAMERA_TYPE == "usb":
+        rtsp_stream1_url = _rtsp_stream1_env if _rtsp_stream1_env else "rtsp://localhost:8554/cam"
+        rtsp_stream_ready = await asyncio.to_thread(_get_mediamtx_stream_ready)
+    else:
+        rtsp_stream1_url = _rtsp_stream1_env
+        rtsp_stream_ready = "N/A"
     # CPU 온도 수집
     try:
         with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
@@ -281,6 +325,9 @@ async def collect_system_info():
         "last_detection_count": detection_count,
         "last_detection_time": detection_time,
         "stomp_connected": "true",
+        "camera_type": _CAMERA_TYPE,
+        "rtsp_stream1_url": rtsp_stream1_url,
+        "rtsp_stream_ready": rtsp_stream_ready,
     }
     data.update(build_runtime_fields(network_status, include_pending_events=True))
     return data
