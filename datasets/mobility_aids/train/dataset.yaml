@@ -1,0 +1,6 @@
+names:
+  0: Wheelchair
+  1: Crutch
+  2: Baby carriage
+path: /Users/my/app/sbms-pi/datasets/mobility_aids/train
+val: ./images/val/

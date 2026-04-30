@@ -1,0 +1,7 @@
+path: /Users/my/app/sbms-pi/datasets/mobility_aids
+train: train/images/val
+val: validation/images/val
+
+names:
+  0: Wheelchair
+  1: Crutch
