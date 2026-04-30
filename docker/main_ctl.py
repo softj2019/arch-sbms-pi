@@ -150,7 +150,7 @@ current_screen_action_updated_at = datetime.now().isoformat(timespec="seconds")
 cv_count_screen_action = 0
 # 교통약자 버튼 활성 만료 시각 (0이면 비활성)
 button_active_until: float = 0.0
-BUTTON_HOLD_SEC = 60
+BUTTON_HOLD_SEC = 20
 
 emergency_message_status = 0
 stop_event = threading.Event()  # 중단 이벤트
