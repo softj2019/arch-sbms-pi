@@ -148,6 +148,9 @@ current_screen_action = "STOP"
 current_screen_action_updated_at = datetime.now().isoformat(timespec="seconds")
 # 재실 감지로 인한 스크린 제어 진행여부
 cv_count_screen_action = 0
+# 교통약자 버튼 활성 만료 시각 (0이면 비활성)
+button_active_until: float = 0.0
+BUTTON_HOLD_SEC = 60
 
 emergency_message_status = 0
 stop_event = threading.Event()  # 중단 이벤트
@@ -215,7 +218,7 @@ def ensure_default_display_running():
 
 def clear_waiting_state(reason: str):
     """Return to the clock when occupancy is no longer considered active."""
-    global cv_count_screen_action, last_people_detected_at, current_waiting_message
+    global cv_count_screen_action, last_people_detected_at, current_waiting_message, button_active_until
 
     if cv_count_screen_action != 1:
         return
@@ -224,6 +227,7 @@ def clear_waiting_state(reason: str):
     cv_count_screen_action = 0
     last_people_detected_at = None
     current_waiting_message = ""
+    button_active_until = 0.0
     logging.info(f"clear_waiting_state: {reason}")
     ensure_default_display_running()
 
@@ -1091,7 +1095,7 @@ def execute():
 # openCV 에서 전송된 인원수를 처리하고, 필요 시 led 전광판에 메시지 전송
 @app.route('/update_count', methods=['POST'])
 def update_count():
-    global emergency_message_status, detected_people_count, cv_count_screen_action, last_screen_action, config_cache, last_people_detected_at
+    global emergency_message_status, detected_people_count, cv_count_screen_action, last_screen_action, config_cache, last_people_detected_at, button_active_until
 
     if emergency_message_status == 1:
         logging.info("[update_count] Emergency mode activated. Stopping...")
@@ -1113,6 +1117,8 @@ def update_count():
             display_color = request_color or config_cache.get("ledFontColor", "00")
 
             if cv_count_screen_action == 0:
+                if request_source == "button":
+                    button_active_until = time.time() + BUTTON_HOLD_SEC
                 stop_default_display()
                 show_waiting_message(display_message, display_color, duration=20)
 
@@ -1130,15 +1136,21 @@ def update_count():
                 else:
                     logging.info("smartpole mode - STOP message skipped")
             elif request_source == "button" and request_message:
+                button_active_until = time.time() + BUTTON_HOLD_SEC
                 show_waiting_message(display_message, display_color, duration=20, force_replace=True)
-                logging.info("update_count: button waiting message applied: '%s'", display_message)
+                logging.info("update_count: button waiting message applied: '%s' (hold %ss)", display_message, BUTTON_HOLD_SEC)
             else:
                 logging.info("update_count: people detected, waiting message already displayed. skip.")
 
         else:
 
             if cv_count_screen_action == 1:
-                clear_waiting_state("update_count: count=0, 시계 표시로 전환")
+                if time.time() < button_active_until:
+                    logging.debug("update_count: count=0 but button active (%.0fs remaining), skip clear",
+                                  button_active_until - time.time())
+                else:
+                    button_active_until = 0.0
+                    clear_waiting_state("update_count: count=0, 시계 표시로 전환")
 
         return jsonify({"status": "success", "message": "Count updated"}), 200
 
