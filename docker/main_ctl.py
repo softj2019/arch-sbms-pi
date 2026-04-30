@@ -1123,8 +1123,8 @@ def update_count():
                                  BUTTON_HOLD_SEC,
                                  datetime.fromtimestamp(button_active_until).strftime("%H:%M:%S"))
                 stop_default_display()
-                show_waiting_message(display_message, display_color, duration=20,
-                                     countdown_until=button_active_until if request_source == "button" else 0.0)
+                _countdown = button_active_until if (request_source == "button" and ENV_TYPE == "dev") else 0.0
+                show_waiting_message(display_message, display_color, duration=20, countdown_until=_countdown)
 
                 # 재실인원 최초 감지시에만 모터 STOP 전송
                 activate_command("STOP", 0.1)
@@ -1141,8 +1141,9 @@ def update_count():
                     logging.info("smartpole mode - STOP message skipped")
             elif request_source == "button" and request_message:
                 button_active_until = time.time() + BUTTON_HOLD_SEC
+                _countdown = button_active_until if ENV_TYPE == "dev" else 0.0
                 show_waiting_message(display_message, display_color, duration=20, force_replace=True,
-                                     countdown_until=button_active_until)
+                                     countdown_until=_countdown)
                 logging.info("[BUTTON] 교통약자 갱신 → %ss 후 만료 (%s) 메시지: '%s'",
                              BUTTON_HOLD_SEC,
                              datetime.fromtimestamp(button_active_until).strftime("%H:%M:%S"),
