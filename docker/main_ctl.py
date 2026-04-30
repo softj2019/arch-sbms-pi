@@ -1154,7 +1154,12 @@ def update_count():
         else:
 
             if cv_count_screen_action == 1:
-                clear_waiting_state("update_count: people count cleared, resetting screen action and displaying clock.")
+                grace = last_people_detected_at is not None and \
+                        (datetime.now() - last_people_detected_at).total_seconds() <= PEOPLE_DETECTION_TIMEOUT_SEC
+                if grace:
+                    logging.debug("update_count: count=0 but within grace period, keeping waiting message")
+                else:
+                    clear_waiting_state("update_count: people count cleared, resetting screen action and displaying clock.")
 
         return jsonify({"status": "success", "message": "Count updated"}), 200
 
