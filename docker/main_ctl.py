@@ -1119,6 +1119,9 @@ def update_count():
             if cv_count_screen_action == 0:
                 if request_source == "button":
                     button_active_until = time.time() + BUTTON_HOLD_SEC
+                    logging.info("[BUTTON] 교통약자 시작 → %ss 후 만료 (%s)",
+                                 BUTTON_HOLD_SEC,
+                                 datetime.fromtimestamp(button_active_until).strftime("%H:%M:%S"))
                 stop_default_display()
                 show_waiting_message(display_message, display_color, duration=20)
 
@@ -1138,7 +1141,10 @@ def update_count():
             elif request_source == "button" and request_message:
                 button_active_until = time.time() + BUTTON_HOLD_SEC
                 show_waiting_message(display_message, display_color, duration=20, force_replace=True)
-                logging.info("update_count: button waiting message applied: '%s' (hold %ss)", display_message, BUTTON_HOLD_SEC)
+                logging.info("[BUTTON] 교통약자 갱신 → %ss 후 만료 (%s) 메시지: '%s'",
+                             BUTTON_HOLD_SEC,
+                             datetime.fromtimestamp(button_active_until).strftime("%H:%M:%S"),
+                             display_message)
             else:
                 logging.info("update_count: people detected, waiting message already displayed. skip.")
 
@@ -1146,10 +1152,11 @@ def update_count():
 
             if cv_count_screen_action == 1:
                 if time.time() < button_active_until:
-                    logging.debug("update_count: count=0 but button active (%.0fs remaining), skip clear",
-                                  button_active_until - time.time())
+                    logging.info("[BUTTON] count=0 수신 → 만료까지 %.0fs 남음, 시계 전환 대기",
+                                 button_active_until - time.time())
                 else:
                     button_active_until = 0.0
+                    logging.info("[BUTTON] 교통약자 종료 → 시계 표시 전환")
                     clear_waiting_state("update_count: count=0, 시계 표시로 전환")
 
         return jsonify({"status": "success", "message": "Count updated"}), 200
