@@ -90,6 +90,72 @@ sbms-pi/
 
 ## sola-1 접속
 ```bash
-ssh admin@192.168.10.100   # 로컬 (동일 라우터)
-ssh -p 20022 my@58.121.142.83  # 역터널 (외부)
+ssh admin@192.168.10.100        # 로컬 (동일 라우터)
+ssh -p 20022 admin@58.121.142.83  # 역터널 (외부)
+```
+
+---
+
+## 유지보수: 역방향 터널 (autossh)
+
+### 구성
+- sola-1 → `58.121.142.83:2222` 역터널, 외부 포트 `20022` → sola-1:22
+- autossh 프로세스: sola-1에서 수동 실행 (systemd 서비스 없음)
+
+### 역터널 끊김 시 복구
+
+**sola-1에서 재시작:**
+```bash
+kill $(pgrep autossh)
+sleep 2
+AUTOSSH_GATETIME=0 autossh -M 0 -f -N \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no \
+  -i /home/admin/.ssh/id_ed25519 \
+  -R 0.0.0.0:20022:localhost:22 my@58.121.142.83 -p 2222
+```
+
+**확인:**
+```bash
+ssh -p 20022 admin@58.121.142.83
+```
+
+### ⚠️ GatewayPorts 필수 설정 (원격 서버 1회 적용)
+
+역터널이 재시작해도 외부 접속이 안 될 경우, 원격 서버(`58.121.142.83`)의
+`GatewayPorts` 설정이 꺼져 있는 것. **원격 서버에서 1회 적용 필요:**
+
+```bash
+# 원격 서버 (58.121.142.83) 에서 실행
+echo "GatewayPorts clientspecified" | sudo tee -a /etc/ssh/sshd_config
+sudo systemctl restart sshd
+```
+
+적용 후 sola-1에서 autossh 재시작하면 외부 접속 정상화됨.
+
+### autossh systemd 서비스 등록 (선택 — 재부팅 후 자동 복구)
+```bash
+# sola-1에서 실행
+sudo tee /etc/systemd/system/autossh-tunnel.service << 'EOF'
+[Unit]
+Description=AutoSSH Reverse Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=admin
+Environment="AUTOSSH_GATETIME=0"
+ExecStart=/usr/lib/autossh/autossh -M 0 -N \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no \
+  -i /home/admin/.ssh/id_ed25519 \
+  -R 0.0.0.0:20022:localhost:22 my@58.121.142.83 -p 2222
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now autossh-tunnel.service
 ```
