@@ -929,24 +929,23 @@ while True:
             state.previous_count = count
             state.committed_count = count
 
-            # count≥1: 3초마다 POST / count=0: 이전이 >0이었을 때만 즉시 POST
-            if count >= 1 and (now - state.last_post_ts) >= 3.0:
+            # count≥1 또는 count=0 모두 3초마다 POST
+            if (now - state.last_post_ts) >= 3.0:
                 post_update(count, (now - state.last_radar_ts) < RADAR_HOLDTIME, src)
                 state.last_post_ts = now
-                if SKIP_SENDS:
-                    logger.info(f"[SKIP] STOMP 스킵 people={count}")
+                if count >= 1:
+                    if SKIP_SENDS:
+                        logger.info(f"[SKIP] STOMP 스킵 people={count}")
+                    else:
+                        stomp_payload = {
+                            "terminal_id": TERMINAL_ID,
+                            "people_count": count,
+                            "stat_people_count": state.stat_people_count,
+                            "file_name": "Debug off",
+                        }
+                        asyncio.run(send_stomp_message("/api/iot/hid", stomp_payload))
                 else:
-                    stomp_payload = {
-                        "terminal_id": TERMINAL_ID,
-                        "people_count": count,
-                        "stat_people_count": state.stat_people_count,
-                        "file_name": "Debug off",
-                    }
-                    asyncio.run(send_stomp_message("/api/iot/hid", stomp_payload))
-            elif count == 0 and was_nonzero:
-                post_update(0, False, src)
-                state.last_post_ts = now
-                logger.info("사람 없음 → 시계 표시 요청")
+                    logger.info("사람 없음 → 시계 표시 요청")
         else:
             logger.debug("확정 카운트 없음 - POST/STOMP 생략")
 
