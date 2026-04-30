@@ -323,7 +323,7 @@ def get_decoded_message(raw_message: str | None) -> str:
     return raw_message
 
 
-def show_waiting_message(message: str, color: str = "00", duration: int = 20, force_replace: bool = False) -> None:
+def show_waiting_message(message: str, color: str = "00", duration: int = 20, force_replace: bool = False, countdown_until: float = 0.0) -> None:
     """Display or replace the current waiting message on the LED panel."""
     global current_waiting_message, message_thread
 
@@ -351,7 +351,7 @@ def show_waiting_message(message: str, color: str = "00", duration: int = 20, fo
         message_thread = None
 
     current_waiting_message = message
-    start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, duration)
+    start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, duration, countdown_until)
 
 
 # 30초 추기로 STOMP 기반 설정값 업데이트
@@ -1123,7 +1123,8 @@ def update_count():
                                  BUTTON_HOLD_SEC,
                                  datetime.fromtimestamp(button_active_until).strftime("%H:%M:%S"))
                 stop_default_display()
-                show_waiting_message(display_message, display_color, duration=20)
+                show_waiting_message(display_message, display_color, duration=20,
+                                     countdown_until=button_active_until if request_source == "button" else 0.0)
 
                 # 재실인원 최초 감지시에만 모터 STOP 전송
                 activate_command("STOP", 0.1)
@@ -1140,7 +1141,8 @@ def update_count():
                     logging.info("smartpole mode - STOP message skipped")
             elif request_source == "button" and request_message:
                 button_active_until = time.time() + BUTTON_HOLD_SEC
-                show_waiting_message(display_message, display_color, duration=20, force_replace=True)
+                show_waiting_message(display_message, display_color, duration=20, force_replace=True,
+                                     countdown_until=button_active_until)
                 logging.info("[BUTTON] 교통약자 갱신 → %ss 후 만료 (%s) 메시지: '%s'",
                              BUTTON_HOLD_SEC,
                              datetime.fromtimestamp(button_active_until).strftime("%H:%M:%S"),
@@ -1219,7 +1221,7 @@ def display_default_message():
 
 # 메세지를 일정시간 유지 후 갱신하는 스레드 함수
 def start_message_with_timeout(message, color="00", font="00", weight="01", eff="090009000900", ysz="2", fix=1,
-                               dly_interval=60000, duration=60):
+                               dly_interval=60000, duration=60, countdown_until=0.0):
     def message_worker():
         global message_thread
         logging.info(f"start_message_with_timeout: 메시지 전송: '{message}'")
@@ -1229,7 +1231,18 @@ def start_message_with_timeout(message, color="00", font="00", weight="01", eff=
             command = encode_to_protocol(message, "", color, font, weight, eff, ysz, fix, dly_interval)
             send_command(command)
             logging.info(f"start_message_with_timeout: 메시지 전송 완료: '{message}'")
-            message_thread_stop.wait()  # clear_waiting_state가 호출될 때까지 대기
+
+            if countdown_until > 0:
+                while not message_thread_stop.is_set():
+                    remaining = int(countdown_until - time.time())
+                    if remaining <= 0:
+                        break
+                    countdown_msg = f"{message} {remaining}s"
+                    cmd = encode_to_protocol(countdown_msg, "", color, font, weight, eff, ysz, fix, dly_interval)
+                    send_command(cmd)
+                    message_thread_stop.wait(timeout=1.0)
+            else:
+                message_thread_stop.wait()
         finally:
             message_thread = None
 
