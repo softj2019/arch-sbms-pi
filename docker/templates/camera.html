@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RCWL-0516 + 카메라 스트림</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 28px;
+        }
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: 0 auto 30px;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        video {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-primary {
+            background: #0ea5e9;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #0284c7;
+        }
+        .btn-secondary {
+            background: #64748b;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background: #475569;
+        }
+        .info {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 20px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .status {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .status-item {
+            padding: 10px;
+            background: #1a1a1a;
+            border-left: 3px solid #0ea5e9;
+        }
+        .status-label {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+        .status-value {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎥 RTSP 카메라 스트림</h1>
+
+        <div class="video-container">
+            <video
+                id="videoPlayer"
+                controls
+                autoplay
+                muted
+                playsinline>
+                <p>웹 비디오를 지원하지 않는 브라우저입니다.</p>
+            </video>
+        </div>
+
+        <div class="controls">
+            <button class="btn-primary" onclick="playHLS()">▶ HLS 재생</button>
+            <button class="btn-primary" onclick="playRTSP()">▶ RTSP 재생</button>
+            <button class="btn-secondary" onclick="stopVideo()">⏹ 중지</button>
+            <button class="btn-secondary" onclick="reloadPage()">🔄 새로고침</button>
+        </div>
+
+        <div class="info">
+            <div style="margin-bottom: 15px;">
+                <strong>📡 스트림 정보</strong>
+            </div>
+            <div style="margin-bottom: 10px;">
+                <code style="background: #1a1a1a; padding: 8px; border-radius: 4px; display: block;">
+                    RTSP: rtsp://192.168.10.100:8554/cam
+                </code>
+            </div>
+            <div style="margin-bottom: 10px;">
+                <code style="background: #1a1a1a; padding: 8px; border-radius: 4px; display: block;">
+                    HLS: http://192.168.10.100:8888/cam/index.m3u8
+                </code>
+            </div>
+
+            <div class="status">
+                <div class="status-item">
+                    <div class="status-label">카메라</div>
+                    <div class="status-value" id="cameraStatus">Microdia USB</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">센서 모드</div>
+                    <div class="status-value">Camera Only</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">해상도</div>
+                    <div class="status-value">256x416</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">프레임</div>
+                    <div class="status-value" id="fpsStatus">~3 FPS</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('videoPlayer');
+        const HOST = '192.168.10.100';
+
+        function playHLS() {
+            const hlsUrl = `http://${HOST}:8888/cam/index.m3u8`;
+
+            // HLS.js 라이브러리 로드
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
+            script.onload = () => {
+                if (Hls.isSupported()) {
+                    const hls = new Hls();
+                    hls.loadSource(hlsUrl);
+                    hls.attachMedia(video);
+                    video.play();
+                }
+            };
+            document.head.appendChild(script);
+        }
+
+        function playRTSP() {
+            const rtspUrl = `rtsp://${HOST}:8554/cam`;
+            video.src = rtspUrl;
+            video.play();
+        }
+
+        function stopVideo() {
+            video.pause();
+            video.src = '';
+        }
+
+        function reloadPage() {
+            location.reload();
+        }
+
+        // 페이지 로드 시 RTSP 재생 시도
+        window.addEventListener('load', () => {
+            setTimeout(() => playRTSP(), 500);
+        });
+    </script>
+</body>
+</html>
