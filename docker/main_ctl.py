@@ -183,7 +183,6 @@ config_cache.update({
     "t1h": "0.0",
 })
 config_lock = threading.Lock()
-PEOPLE_DETECTION_TIMEOUT_SEC = int(os.getenv("PEOPLE_DETECTION_TIMEOUT_SEC", "10"))
 
 
 def stop_default_display():
@@ -238,21 +237,6 @@ def clear_waiting_state(reason: str):
         logging.info("smartpole mode - screen/action message skipped")
 
 
-def people_detection_watchdog():
-    """Fallback to the clock when the camera stops reporting occupancy clears."""
-    global last_people_detected_at
-
-    while True:
-        time.sleep(1)
-
-        if cv_count_screen_action != 1 or last_people_detected_at is None:
-            continue
-
-        elapsed = (datetime.now() - last_people_detected_at).total_seconds()
-        if elapsed > PEOPLE_DETECTION_TIMEOUT_SEC:
-            clear_waiting_state(
-                f"people detection timeout exceeded ({int(elapsed)}s > {PEOPLE_DETECTION_TIMEOUT_SEC}s)"
-            )
 
 # tapo 제어 (내부 전용)
 async def set_tapo_power_if_needed(ip, turn_on: bool, device_name: str = "Tapo"):
@@ -1154,12 +1138,7 @@ def update_count():
         else:
 
             if cv_count_screen_action == 1:
-                grace = last_people_detected_at is not None and \
-                        (datetime.now() - last_people_detected_at).total_seconds() <= PEOPLE_DETECTION_TIMEOUT_SEC
-                if grace:
-                    logging.debug("update_count: count=0 but within grace period, keeping waiting message")
-                else:
-                    clear_waiting_state("update_count: people count cleared, resetting screen action and displaying clock.")
+                clear_waiting_state("update_count: count=0, 시계 표시로 전환")
 
         return jsonify({"status": "success", "message": "Count updated"}), 200
 
@@ -1224,34 +1203,14 @@ def start_message_with_timeout(message, color="00", font="00", weight="01", eff=
                                dly_interval=60000, duration=60):
     def message_worker():
         global message_thread
-        start_time = datetime.now()
-        logging.info(f"start_message_with_timeout: 메시지 스레드 시작됨: '{message}' (유지시간: {duration}s)")
-
+        logging.info(f"start_message_with_timeout: 메시지 전송: '{message}'")
         try:
             if LED_LINES >= 2:
                 send_led_reset()
             command = encode_to_protocol(message, "", color, font, weight, eff, ysz, fix, dly_interval)
             send_command(command)
             logging.info(f"start_message_with_timeout: 메시지 전송 완료: '{message}'")
-
-            while not message_thread_stop.is_set():
-                elapsed = (datetime.now() - start_time).total_seconds()
-                if elapsed > duration:
-                    logging.info(f"start_message_with_timeout: 메시지 유지시간 초과됨: '{message}'")
-
-                    if cv_count_screen_action == 1:
-                        logging.info(f"start_message_with_timeout: 재실감지 유지 중, 메시지 재전송: '{message}'")
-                        if LED_LINES >= 2:
-                            send_led_reset()
-                        new_command = encode_to_protocol(message, "", color, font, weight, eff, ysz, fix, dly_interval)
-                        send_command(new_command)
-                        start_time = datetime.now()
-                        continue
-
-                    ensure_default_display_running()
-                    break
-
-                time.sleep(1)
+            message_thread_stop.wait()  # clear_waiting_state가 호출될 때까지 대기
         finally:
             message_thread = None
 
@@ -1455,7 +1414,6 @@ if __name__ == "__main__":
         config_fetch_thread = threading.Thread(target=start_config_fetch_loop, daemon=True)
         fan_control_thread = threading.Thread(target=start_fan_auto_control, daemon=True)
         ws_watchdog = threading.Thread(target=ws_watchdog_thread, daemon=True)
-        people_watchdog = threading.Thread(target=people_detection_watchdog, daemon=True)
 
         # 병렬 프로세스 생성
         flask_process = threading.Thread(target=start_flask_app, daemon=True)
@@ -1472,7 +1430,6 @@ if __name__ == "__main__":
         config_fetch_thread.start()
         fan_control_thread.start()
         ws_watchdog.start()
-        people_watchdog.start()
 
         # 메인 프로세스에서 서브 프로세스 대기
         flask_process.join()

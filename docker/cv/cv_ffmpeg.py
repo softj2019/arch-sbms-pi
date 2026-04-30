@@ -133,6 +133,7 @@ class AppState:
     previous_count: int = 0
     stat_people_count: int = 0
     last_radar_ts: float = 0.0
+    last_post_ts: float = 0.0
     last_frame_annotated: object = None   # np.ndarray or None
     fps_ewma: float = 0.0
     radar_history: deque = field(default_factory=lambda: deque(maxlen=20))
@@ -921,16 +922,17 @@ while True:
 
 
         if count >= 0:
+            now = time.time()
+            was_nonzero = state.previous_count > 0
             if count > state.previous_count:
                 state.stat_people_count += count - state.previous_count
-            elif count == 0:
-                state.previous_count = 0
             state.previous_count = count
             state.committed_count = count
 
-            post_update(count, (time.time() - state.last_radar_ts) < RADAR_HOLDTIME, src)
-
-            if count > 0:
+            # count≥1: 3초마다 POST / count=0: 이전이 >0이었을 때만 즉시 POST
+            if count >= 1 and (now - state.last_post_ts) >= 3.0:
+                post_update(count, (now - state.last_radar_ts) < RADAR_HOLDTIME, src)
+                state.last_post_ts = now
                 if SKIP_SENDS:
                     logger.info(f"[SKIP] STOMP 스킵 people={count}")
                 else:
@@ -941,8 +943,10 @@ while True:
                         "file_name": "Debug off",
                     }
                     asyncio.run(send_stomp_message("/api/iot/hid", stomp_payload))
-            else:
-                logger.info("사람 없음 - STOMP 전송 생략")
+            elif count == 0 and was_nonzero:
+                post_update(0, False, src)
+                state.last_post_ts = now
+                logger.info("사람 없음 → 시계 표시 요청")
         else:
             logger.debug("확정 카운트 없음 - POST/STOMP 생략")
 
