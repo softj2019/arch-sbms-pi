@@ -45,6 +45,7 @@ logger = logging.getLogger("PeopleDetector")
 # ── Phase 1: ENV 설정 ─────────────────────────────────────────
 ENV_TYPE          = os.getenv("ENV_TYPE", "prod").lower()        # dev|prod  (디버그 스트림 ON/OFF)
 SKIP_SENDS        = os.getenv("SKIP_SENDS", "false").lower() == "true"  # Mac 테스트용 전체 스킵
+MODE              = os.getenv("MODE", "prod").lower()  # debug|prod
 CAMERA_ENABLED    = os.getenv("CAMERA_ENABLED", "true").lower() == "true"   # RTSP/YOLO 사용 여부
 SENSOR_MODE       = os.getenv("SENSOR_MODE", "both").lower()     # camera|radar|both
 FUSION_MODE       = os.getenv("FUSION_MODE", "confirm").lower()  # gating|confirm
@@ -108,10 +109,12 @@ def load_stat_count():
 
 # ── YOLO 모델 로딩 ────────────────────────────────────────────
 SCRIPT_DIR = "d:/download/yolo" if os.name == "nt" else DATA_DIR
-MODEL_PATH = os.path.join(SCRIPT_DIR, "yolov8n.pt")
+MODEL_PATH = os.path.join(SCRIPT_DIR, "yolo11n.pt")
+if not os.path.exists(MODEL_PATH):
+    MODEL_PATH = os.path.join(SCRIPT_DIR, "yolov8n.pt")
 if not os.path.exists(MODEL_PATH):
     logger.info("YOLO 모델 다운로드 시작...")
-    url = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
+    url = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt"
     os.makedirs(SCRIPT_DIR, exist_ok=True)
     urllib.request.urlretrieve(url, MODEL_PATH)
     logger.info("YOLO 모델 다운로드 완료")
@@ -134,7 +137,8 @@ class AppState:
     stat_people_count: int = 0
     last_radar_ts: float = 0.0
     last_post_ts: float = 0.0
-    last_frame_annotated: object = None   # np.ndarray or None
+    last_frame_annotated: object = None   # np.ndarray with YOLO overlay
+    last_frame_raw: object = None          # np.ndarray raw (no overlay, 30fps)
     fps_ewma: float = 0.0
     radar_history: deque = field(default_factory=lambda: deque(maxlen=20))
     # confirm mode state
@@ -425,6 +429,8 @@ class _DebugHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/stream":
             self._stream()
+        elif self.path == "/stream_raw":
+            self._stream_raw()
         elif self.path == "/state.json":
             self._state_json()
         else:
@@ -498,6 +504,10 @@ class _DebugHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp)
 
+    def _send_mjpeg_frame(self, frame):
+        _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
+
     def _stream(self):
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -510,13 +520,28 @@ class _DebugHandler(BaseHTTPRequestHandler):
             if frame is None:
                 time.sleep(0.05)
                 continue
-            _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            data = buf.tobytes()
             try:
-                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n")
+                self._send_mjpeg_frame(frame)
             except Exception:
                 break
             time.sleep(0.05)
+
+    def _stream_raw(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.end_headers()
+        last_sent = None
+        while True:
+            frame = self.state.last_frame_raw
+            if frame is None or frame is last_sent:
+                time.sleep(1 / 30)
+                continue
+            last_sent = frame
+            try:
+                self._send_mjpeg_frame(frame)
+            except Exception:
+                break
+            time.sleep(1 / 30)
 
     def _state_json(self):
         s = self.state
@@ -591,8 +616,12 @@ pre{background:#111;border:1px solid #222;padding:8px;font-size:11px;overflow:au
 </header>
 <div class=main>
   <div class="panel cam">
-    <div class=label>Camera + YOLO</div>
+    <div class=label>YOLO Overlay</div>
     <img class=stream src=/stream>
+  </div>
+  <div class="panel cam">
+    <div class=label>Raw (30fps)</div>
+    <img class=stream src=/stream_raw>
   </div>
   <div class="panel right">
     <div class=gauge-wrap>
@@ -703,39 +732,32 @@ def start_debug_server(state: AppState, port: int):
     t.start()
     logger.info(f"디버그 스트림: http://localhost:{port}")
 
-# ── annotate ─────────────────────────────────────────────────
-def annotate(frame, boxes, state: AppState):
-    import numpy as np
-    now = time.time()
-    f = frame.copy()
-    for (x1, y1, x2, y2) in boxes:
-        cv2.rectangle(f, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    radar_active = (now - state.last_radar_ts) < RADAR_HOLDTIME
-    color = (0, 0, 255) if radar_active else (100, 100, 100)
-    h, w = f.shape[:2]
-    cv2.circle(f, (w - 40, 40), 25, color, -1 if radar_active else 2)
-    if now - state.last_radar_ts < 1.0:
-        cv2.rectangle(f, (0, 0), (w - 1, h - 1), (0, 0, 255), 4)
-    for i, ts in enumerate(list(state.radar_history)[-5:]):
-        txt = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
-        cv2.putText(f, txt, (10, h - 20 - i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 50), 1)
-    lines = [
-        f"count={state.committed_count}  prev={state.previous_count}",
-        f"radar={'ON' if radar_active else 'off'}  fps={state.fps_ewma:.1f}",
-        f"mode={SENSOR_MODE}/{FUSION_MODE}  src={state.source}",
-    ]
-    for i, ln in enumerate(lines):
-        cv2.putText(f, ln, (10, 22 + i * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-    return f
+# ── 캡처 전용 스레드 (30fps raw 버퍼) ────────────────────────
+def start_capture_thread(cap_src: CaptureSource, state: AppState):
+    def worker():
+        while True:
+            frame = cap_src.read()
+            if frame is not None:
+                state.last_frame_raw = frame
+    threading.Thread(target=worker, daemon=True).start()
 
-# ── Phase 1: 함수 분리 ────────────────────────────────────────
-def capture_once(cap_src: CaptureSource, state: AppState):
-    return cap_src.read()
-
+# 교통약자 관련 감지 클래스 (모델 교체 시 여기만 수정)
+MOBILITY_AID_CLASSES = {
+    "wheelchair", "crutch", "crutches", "stroller", "baby carriage",
+    "walking frame", "walker", "mobility aid", "cast", "splint",
+}
+MOBILITY_LABEL_KR = {
+    "wheelchair": "휠체어",
+    "crutch": "목발", "crutches": "목발",
+    "stroller": "유모차", "baby carriage": "유모차",
+    "walking frame": "보행기", "walker": "보행기",
+    "cast": "기부스", "splint": "기부스",
+    "mobility aid": "교통약자",
+}
 
 INFER_WIDTH = int(os.getenv("INFER_WIDTH", "416"))
 
-def infer_once(frame, state: AppState) -> list:
+def infer_once(frame, state: AppState):
     t0 = time.time()
     h, w = frame.shape[:2]
     scale = 1.0
@@ -744,39 +766,59 @@ def infer_once(frame, state: AppState) -> list:
         frame_resized = cv2.resize(frame, (INFER_WIDTH, int(h * scale)))
     else:
         frame_resized = frame
-    results = model.predict(frame_resized, conf=0.4, imgsz=INFER_WIDTH)
+    results = model.predict(frame_resized, conf=0.4, imgsz=INFER_WIDTH, verbose=False)
     elapsed = time.time() - t0
-    alpha = 0.1
-    fps = 1.0 / elapsed if elapsed > 0 else 0.0
-    state.fps_ewma = alpha * fps + (1 - alpha) * state.fps_ewma
+    state.fps_ewma = 0.1 * (1.0 / elapsed if elapsed > 0 else 0.0) + 0.9 * state.fps_ewma
     state.last_inference_ms = elapsed * 1000
 
     boxes = []
+    mobility_found = []
     for box in results[0].boxes.data:
         x1, y1, x2, y2, conf, cls_id = box.tolist()
         x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
         if scale < 1.0:
             x1, y1, x2, y2 = int(x1 / scale), int(y1 / scale), int(x2 / scale), int(y2 / scale)
-        class_id = int(cls_id)
-        if class_id != 0:
+        class_name = model.names.get(int(cls_id), "").lower()
+
+        # 교통약자 클래스 감지 (디버그 LED 출력용)
+        if class_name in MOBILITY_AID_CLASSES:
+            kr = MOBILITY_LABEL_KR.get(class_name, class_name)
+            if kr not in mobility_found:
+                mobility_found.append(kr)
+            boxes.append((x1, y1, x2, y2))
             continue
-        w, h = x2 - x1, y2 - y1
-        if w < 10 or h < 20:
+
+        # person(0) 필터
+        if int(cls_id) != 0:
             continue
-        aspect_ratio = h / w if w != 0 else 0
-        if aspect_ratio < 0.2 or aspect_ratio > 4.0:
+        bw, bh = x2 - x1, y2 - y1
+        if bw < 10 or bh < 20:
+            continue
+        if bh / bw < 0.2 or bh / bw > 4.0:
             continue
         boxes.append((x1, y1, x2, y2))
+
+    # ultralytics 내장 plot() 으로 오버레이 생성
+    annotated = results[0].plot()
+    if scale < 1.0:
+        annotated = cv2.resize(annotated, (w, h))
+
+    if mobility_found:
+        logger.info(f"[교통약자 감지] {mobility_found}")
     logger.info(f"감지된 인원 수: {len(boxes)}")
-    return boxes
+    return boxes, annotated, mobility_found
 
 
-def post_update(count: int, radar_active: bool, source_str: str):
+def post_update(count: int, radar_active: bool, source_str: str, mobility_classes: list = None):
     if SKIP_SENDS:
         logger.info(f"[SKIP] POST 스킵 count={count} radar={radar_active} src={source_str}")
         return
     try:
-        response = requests.post(server_url, json={"count": count})
+        payload = {"count": count}
+        if MODE == "debug" and mobility_classes:
+            payload["message"] = " ".join(mobility_classes)
+            logger.info(f"[DEBUG] 교통약자 LED 출력: {payload['message']}")
+        response = requests.post(server_url, json=payload)
         if response.status_code == 200:
             logger.info(f"통합제어보드로 인원 수 전송 성공: {count}")
         else:
@@ -862,6 +904,9 @@ atexit.register(lambda: save_stat_count(state.stat_people_count))
 if ENV_TYPE == "dev":
     start_debug_server(state, DEBUG_STREAM_PORT)
 
+if CAMERA_ENABLED:
+    start_capture_thread(cap_src, state)
+
 # ── 메인 루프 ─────────────────────────────────────────────────
 while True:
     try:
@@ -905,19 +950,17 @@ while True:
         if not CAMERA_ENABLED:
             time.sleep(1)
             continue
-        frame = capture_once(cap_src, state)
+        frame = state.last_frame_raw
         if frame is None:
-            time.sleep(3)
+            time.sleep(0.1)
             continue
 
-        boxes = infer_once(frame, state)
+        boxes, annotated, mobility_classes = infer_once(frame, state)
 
         count, src = decide_count(len(boxes), state, radar_triggered)
         state.source = src if src else state.source
 
-        env_type = os.getenv("ENV_TYPE", "prod").lower()
-        if env_type == "dev":
-            annotated = annotate(frame, boxes, state)
+        if ENV_TYPE == "dev":
             state.last_frame_annotated = annotated
 
 
@@ -931,7 +974,7 @@ while True:
 
             # count≥1 또는 count=0 모두 3초마다 POST
             if (now - state.last_post_ts) >= 3.0:
-                post_update(count, (now - state.last_radar_ts) < RADAR_HOLDTIME, src)
+                post_update(count, (now - state.last_radar_ts) < RADAR_HOLDTIME, src, mobility_classes)
                 state.last_post_ts = now
                 if count >= 1:
                     if SKIP_SENDS:
