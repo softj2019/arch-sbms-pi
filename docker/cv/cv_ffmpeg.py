@@ -132,6 +132,11 @@ else:
     mobility_model = None
     logger.warning(f"교통약자 모델 없음 ({MOBILITY_MODEL_PATH}) — 기본 모델로 대체")
 
+# ── 교통약자 추론 주기 설정 (N프레임마다 1회) ─────────────────
+MOBILITY_INFER_INTERVAL = int(os.getenv("MOBILITY_INFER_INTERVAL", "5"))
+_mobility_frame_counter = 0
+_last_mobility_found: list = []
+
 API_URL = os.getenv("API_URL")
 server_url = f"{API_URL}/update_count"
 encoded_password = urllib.parse.quote(PASSWORD_OPENCV) if PASSWORD_OPENCV else ""
@@ -803,30 +808,33 @@ def infer_once(frame, state: AppState):
     if scale < 1.0:
         annotated = cv2.resize(annotated, (w, h))
 
-    # ── 교통약자 모델: Wheelchair / Crutch 전용 추론 ───────────
-    mobility_found = []
-    mob_model = mobility_model if mobility_model is not None else model
-    mob_names = mob_model.names
-    mob_classes = {0: "휠체어", 1: "목발"} if mobility_model is not None else None
+    # ── 교통약자 모델: N프레임마다 1회 추론 ─────────────────────
+    global _mobility_frame_counter, _last_mobility_found
+    _mobility_frame_counter += 1
+    if _mobility_frame_counter >= MOBILITY_INFER_INTERVAL:
+        _mobility_frame_counter = 0
+        mob_model = mobility_model if mobility_model is not None else model
+        mob_names = mob_model.names
+        mob_classes = {0: "휠체어", 1: "목발"} if mobility_model is not None else None
 
-    mob_results = mob_model.predict(frame_resized, conf=0.45, imgsz=INFER_WIDTH, verbose=False)
-    for box in mob_results[0].boxes.data:
-        x1, y1, x2, y2, conf, cls_id = box.tolist()
-        cls_id = int(cls_id)
-        if mobility_model is not None:
-            # 파인튜닝 모델: 0=Wheelchair, 1=Crutch
-            kr = mob_classes.get(cls_id)
-        else:
-            # 폴백: 기본 모델 class name 매핑
-            class_name = mob_names.get(cls_id, "").lower()
-            kr = MOBILITY_LABEL_KR.get(class_name) if class_name in MOBILITY_AID_CLASSES else None
-        if kr and kr not in mobility_found:
-            mobility_found.append(kr)
+        mob_results = mob_model.predict(frame_resized, conf=0.45, imgsz=INFER_WIDTH, verbose=False)
+        found = []
+        for box in mob_results[0].boxes.data:
+            x1, y1, x2, y2, conf, cls_id = box.tolist()
+            cls_id = int(cls_id)
+            if mobility_model is not None:
+                kr = mob_classes.get(cls_id)
+            else:
+                class_name = mob_names.get(cls_id, "").lower()
+                kr = MOBILITY_LABEL_KR.get(class_name) if class_name in MOBILITY_AID_CLASSES else None
+            if kr and kr not in found:
+                found.append(kr)
+        _last_mobility_found = found
+        if found:
+            logger.info(f"[교통약자 감지] {found}")
 
-    if mobility_found:
-        logger.info(f"[교통약자 감지] {mobility_found}")
     logger.info(f"감지된 인원 수: {len(boxes)}")
-    return boxes, annotated, mobility_found
+    return boxes, annotated, _last_mobility_found
 
 
 def post_update(count: int, radar_active: bool, source_str: str, mobility_classes: list = None):
