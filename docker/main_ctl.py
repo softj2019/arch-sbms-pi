@@ -456,10 +456,17 @@ async def schedule_device_control(ip_or_pin):
         return
 
     _led_override_logged = False
+    _loop_counter = 0  # 주기적 상태 로그용 카운터 (3초 간격 × 20 ≈ 60초마다 출력)
+
     while True:
+        _loop_counter += 1
+        _periodic = (_loop_counter % 20 == 1)  # 약 60초마다 True
+
         if led_manual_override_until and datetime.now() < led_manual_override_until:
             _led_override_logged = False
-            logging.debug("schedule_device_control: manual override 중 - 자동제어 스킵")
+            if _periodic:
+                remaining_sec = (led_manual_override_until - datetime.now()).total_seconds()
+                logging.info("schedule_device_control: manual override 중 - 자동제어 스킵 (남은시간: %.0fs)", remaining_sec)
             await asyncio.sleep(3)
             continue
         if not _led_override_logged and led_manual_override_until is not None:
@@ -467,23 +474,40 @@ async def schedule_device_control(ip_or_pin):
             _led_override_logged = True
 
         if ENV_TYPE == 'dev':
-            logging.debug("schedule_device_control: dev 모드 - 스케줄 제어 스킵")
+            if _periodic:
+                on_time, off_time = get_on_off_times()
+                logging.info(
+                    "schedule_device_control: [dev] 스케줄 스킵 - 설정시간 ON=%s OFF=%s",
+                    on_time, off_time,
+                )
             await asyncio.sleep(3)
             continue
 
         on_time, off_time = get_on_off_times()
+        in_on_period = is_between_times(on_time, off_time)
 
         if POWER_CONTROL_MODE == "relay":
             # 릴레이 모드: GPIO 상태 직접 확인
             is_on = relay_is_on(RELAY_LED_PIN)
-            if is_between_times(on_time, off_time):
+            if _periodic:
+                logging.info(
+                    "schedule_device_control: [relay] 상태확인 - 현재=%s, 목표=%s, 설정시간=%s~%s",
+                    "ON" if is_on else "OFF",
+                    "ON" if in_on_period else "OFF",
+                    on_time, off_time,
+                )
+            if in_on_period:
                 if not is_on:
                     relay_on(RELAY_LED_PIN)
-                    logging.info(f"schedule_device_control: LED ON [relay] (시간: {on_time} ~ {off_time})")
+                    logging.info("schedule_device_control: LED 전등 ON [relay] (점등시간: %s ~ %s)", on_time, off_time)
+                elif _periodic:
+                    logging.info("schedule_device_control: LED 전등 이미 ON - 유지중 (점등시간: %s ~ %s)", on_time, off_time)
             else:
                 if is_on:
                     relay_off(RELAY_LED_PIN)
-                    logging.info(f"schedule_device_control: LED OFF [relay] (시간: {off_time} ~ {on_time})")
+                    logging.info("schedule_device_control: LED 전등 OFF [relay] (소등시간: %s ~ %s)", off_time, on_time)
+                elif _periodic:
+                    logging.info("schedule_device_control: LED 전등 이미 OFF - 유지중 (소등시간: %s ~ %s)", off_time, on_time)
         else:
             # Tapo 모드: 네트워크 장치 상태 확인
             try:
@@ -493,14 +517,26 @@ async def schedule_device_control(ip_or_pin):
                 await asyncio.sleep(10)
                 continue
 
-            if is_between_times(on_time, off_time):
-                if not device_status.device_on:
+            is_on = device_status.device_on
+            if _periodic:
+                logging.info(
+                    "schedule_device_control: [tapo] 상태확인 - 현재=%s, 목표=%s, 설정시간=%s~%s",
+                    "ON" if is_on else "OFF",
+                    "ON" if in_on_period else "OFF",
+                    on_time, off_time,
+                )
+            if in_on_period:
+                if not is_on:
                     await set_tapo_power_if_needed(ip_or_pin, True, "LED")
-                    logging.info(f"schedule_device_control: LED ON [tapo] (시간: {on_time} ~ {off_time})")
+                    logging.info("schedule_device_control: LED 전등 ON [tapo] (점등시간: %s ~ %s)", on_time, off_time)
+                elif _periodic:
+                    logging.info("schedule_device_control: LED 전등 이미 ON - 유지중 (점등시간: %s ~ %s)", on_time, off_time)
             else:
-                if device_status.device_on:
+                if is_on:
                     await set_tapo_power_if_needed(ip_or_pin, False, "LED")
-                    logging.info(f"schedule_device_control: LED OFF [tapo] (시간: {off_time} ~ {on_time})")
+                    logging.info("schedule_device_control: LED 전등 OFF [tapo] (소등시간: %s ~ %s)", off_time, on_time)
+                elif _periodic:
+                    logging.info("schedule_device_control: LED 전등 이미 OFF - 유지중 (소등시간: %s ~ %s)", off_time, on_time)
 
         await asyncio.sleep(3)
 
