@@ -1,0 +1,6 @@
+names:
+  0: Wheelchair
+  1: Crutch
+  2: Baby carriage
+path: D:\home\sbms-pi-saftyple\datasets\mobility_aids\validation
+val: .\images\val\

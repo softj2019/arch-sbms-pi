@@ -1,0 +1,5 @@
+runs/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+runs/**/*.bin filter=lfs diff=lfs merge=lfs -text
+datasets/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+datasets/**/*.png filter=lfs diff=lfs merge=lfs -text
+runs/**/*.pt filter=lfs diff=lfs merge=lfs -text

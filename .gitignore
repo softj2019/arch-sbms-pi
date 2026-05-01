@@ -8,6 +8,7 @@ docker/.env
 docker/.env_custom
 data/
 *.pt
+!runs/**/*.pt
 venv/
 node_modules/
 logs_*/
@@ -18,3 +19,6 @@ collect_logs_*.sh
 debug_*/
 debug_capture.py
 .omc/
+datasets/coco8/
+runs/detect/
+yolo11n.pt
