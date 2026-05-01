@@ -473,16 +473,6 @@ async def schedule_device_control(ip_or_pin):
             logging.info("schedule_device_control: manual override 만료 - 자동제어 복귀")
             _led_override_logged = True
 
-        if ENV_TYPE == 'dev':
-            if _periodic:
-                on_time, off_time = get_on_off_times()
-                logging.info(
-                    "schedule_device_control: [dev] 스케줄 스킵 - 설정시간 ON=%s OFF=%s",
-                    on_time, off_time,
-                )
-            await asyncio.sleep(3)
-            continue
-
         on_time, off_time = get_on_off_times()
         in_on_period = is_between_times(on_time, off_time)
 
