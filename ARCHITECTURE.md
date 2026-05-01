@@ -124,6 +124,12 @@ ssh sola-tunnel
 > **VNC 변경 이력 (2026-04-22)**  
 > - `vncserver-x11-serviced` (RealVNC) 비활성화 — Wayland 세션 접근 불가 문제  
 > - `wayvnc` TCP 0.0.0.0:5900 직접 리스닝으로 전환 — Wayland 화면 정상 공유
+>
+> **wayvnc.service 수정 (2026-05-01)**  
+> - 문제: `After=graphical.target` + `WantedBy=multi-user.target` → systemd 순서 사이클로 재부팅 후 dead 상태 (2026-04-26~)  
+> - 로그: `"Compositor has gone away. Exiting..."`  
+> - 수정: `After=graphical.target` → `After=network.target` (graphical.target 의존 제거)  
+> - 결과: TCP 0.0.0.0:5900 LISTEN 정상 복구
 
 > **venv 변경 이력 (2026-04-22)**  
 > - 기존: `gunpo-ori/venv` 공유 사용 (신버전 코드 + 구버전 venv 혼용)  

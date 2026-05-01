@@ -123,6 +123,15 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 logger.info(f"Using device: {device}")
 model = YOLO(MODEL_PATH).to(device)
 
+# ── 교통약자 전용 파인튜닝 모델 (듀얼 모델) ──────────────────
+MOBILITY_MODEL_PATH = os.path.join(DATA_DIR, "mobility_yolo11n_best.pt")
+if os.path.exists(MOBILITY_MODEL_PATH):
+    mobility_model = YOLO(MOBILITY_MODEL_PATH).to(device)
+    logger.info(f"교통약자 모델 로딩 완료: {MOBILITY_MODEL_PATH}")
+else:
+    mobility_model = None
+    logger.warning(f"교통약자 모델 없음 ({MOBILITY_MODEL_PATH}) — 기본 모델로 대체")
+
 API_URL = os.getenv("API_URL")
 server_url = f"{API_URL}/update_count"
 encoded_password = urllib.parse.quote(PASSWORD_OPENCV) if PASSWORD_OPENCV else ""
@@ -766,28 +775,19 @@ def infer_once(frame, state: AppState):
         frame_resized = cv2.resize(frame, (INFER_WIDTH, int(h * scale)))
     else:
         frame_resized = frame
+
+    # ── 메인 모델: 인원 감지 (person class 0) ──────────────────
     results = model.predict(frame_resized, conf=0.4, imgsz=INFER_WIDTH, verbose=False)
     elapsed = time.time() - t0
     state.fps_ewma = 0.1 * (1.0 / elapsed if elapsed > 0 else 0.0) + 0.9 * state.fps_ewma
     state.last_inference_ms = elapsed * 1000
 
     boxes = []
-    mobility_found = []
     for box in results[0].boxes.data:
         x1, y1, x2, y2, conf, cls_id = box.tolist()
         x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
         if scale < 1.0:
             x1, y1, x2, y2 = int(x1 / scale), int(y1 / scale), int(x2 / scale), int(y2 / scale)
-        class_name = model.names.get(int(cls_id), "").lower()
-
-        # 교통약자 클래스 감지 (디버그 LED 출력용)
-        if class_name in MOBILITY_AID_CLASSES:
-            kr = MOBILITY_LABEL_KR.get(class_name, class_name)
-            if kr not in mobility_found:
-                mobility_found.append(kr)
-            boxes.append((x1, y1, x2, y2))
-            continue
-
         # person(0) 필터
         if int(cls_id) != 0:
             continue
@@ -802,6 +802,26 @@ def infer_once(frame, state: AppState):
     annotated = results[0].plot()
     if scale < 1.0:
         annotated = cv2.resize(annotated, (w, h))
+
+    # ── 교통약자 모델: Wheelchair / Crutch 전용 추론 ───────────
+    mobility_found = []
+    mob_model = mobility_model if mobility_model is not None else model
+    mob_names = mob_model.names
+    mob_classes = {0: "휠체어", 1: "목발"} if mobility_model is not None else None
+
+    mob_results = mob_model.predict(frame_resized, conf=0.45, imgsz=INFER_WIDTH, verbose=False)
+    for box in mob_results[0].boxes.data:
+        x1, y1, x2, y2, conf, cls_id = box.tolist()
+        cls_id = int(cls_id)
+        if mobility_model is not None:
+            # 파인튜닝 모델: 0=Wheelchair, 1=Crutch
+            kr = mob_classes.get(cls_id)
+        else:
+            # 폴백: 기본 모델 class name 매핑
+            class_name = mob_names.get(cls_id, "").lower()
+            kr = MOBILITY_LABEL_KR.get(class_name) if class_name in MOBILITY_AID_CLASSES else None
+        if kr and kr not in mobility_found:
+            mobility_found.append(kr)
 
     if mobility_found:
         logger.info(f"[교통약자 감지] {mobility_found}")
