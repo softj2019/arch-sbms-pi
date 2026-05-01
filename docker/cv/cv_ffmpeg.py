@@ -137,6 +137,17 @@ MOBILITY_INFER_INTERVAL = int(os.getenv("MOBILITY_INFER_INTERVAL", "5"))
 _mobility_frame_counter = 0
 _last_mobility_found: list = []
 
+# ── 감지 대상 클래스 필터 ──────────────────────────────────────
+# .env MOBILITY_CLASSES=휠체어,목발  (쉼표 구분, 미설정 시 전체 허용)
+# 가용 클래스: 휠체어 | 목발
+_mobility_classes_raw = os.getenv("MOBILITY_CLASSES", "")
+MOBILITY_ALLOWED_CLASSES: set[str] = (
+    {c.strip() for c in _mobility_classes_raw.split(",") if c.strip()}
+    if _mobility_classes_raw.strip()
+    else set()   # 빈 set = 필터 없음 (전체 허용)
+)
+logger.info(f"교통약자 감지 클래스: {MOBILITY_ALLOWED_CLASSES or '전체'}")
+
 API_URL = os.getenv("API_URL")
 server_url = f"{API_URL}/update_count"
 encoded_password = urllib.parse.quote(PASSWORD_OPENCV) if PASSWORD_OPENCV else ""
@@ -828,7 +839,8 @@ def infer_once(frame, state: AppState):
                 class_name = mob_names.get(cls_id, "").lower()
                 kr = MOBILITY_LABEL_KR.get(class_name) if class_name in MOBILITY_AID_CLASSES else None
             if kr and kr not in found:
-                found.append(kr)
+                if not MOBILITY_ALLOWED_CLASSES or kr in MOBILITY_ALLOWED_CLASSES:
+                    found.append(kr)
         _last_mobility_found = found
         if found:
             logger.info(f"[교통약자 감지] {found}")
