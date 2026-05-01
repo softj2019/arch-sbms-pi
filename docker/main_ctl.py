@@ -108,6 +108,16 @@ else:
 # 환경 타입: dev → 폰트 축소 등 개발 편의 적용 / prod → 운영 기본값
 ENV_TYPE = os.getenv('ENV_TYPE', 'prod').lower()
 
+# 동작 모드 (.env MODE=debug|debug,detail|prod)
+#   prod        : 기본 운영 모드 — 타이머 표시 시 "{메시지} {남은초}s" 형식
+#   debug       : 디버그 모드 — 타이머 표시 시 숫자(남은 초)만 표시, 메시지·"초" 단위 생략
+#   debug,detail: 상세 디버그 모드 — 타이머 숫자 + 현재 감지된 교통약자 클래스명 함께 표시
+#                 예) "12 [휠체어]"  ← 감지 클래스가 없으면 "12 []"
+_MODE_RAW = os.getenv('MODE', 'prod').lower()
+MODE       = _MODE_RAW            # 원본 문자열 보존 (예: "debug,detail")
+MODE_DEBUG        = 'debug' in _MODE_RAW          # debug 또는 debug,detail 이면 True
+MODE_DEBUG_DETAIL = 'debug,detail' in _MODE_RAW   # debug,detail 이면 True
+
 # LED 전광판 설정 (.env 우선, 없으면 ENV_TYPE 기반 기본값)
 LED_LINES = int(os.getenv('LED_LINES', '2'))
 LED_YSZ   = os.getenv('LED_YSZ', '1' if ENV_TYPE == 'dev' else '2')
@@ -323,8 +333,13 @@ def get_decoded_message(raw_message: str | None) -> str:
     return raw_message
 
 
-def show_waiting_message(message: str, color: str = "00", duration: int = 20, force_replace: bool = False, countdown_until: float = 0.0) -> None:
-    """Display or replace the current waiting message on the LED panel."""
+def show_waiting_message(message: str, color: str = "00", duration: int = 20, force_replace: bool = False,
+                         countdown_until: float = 0.0, mobility_classes: list | None = None) -> None:
+    """LED 전광판에 대기 메시지를 표시한다. countdown_until이 설정되면 타이머가 함께 갱신된다.
+
+    mobility_classes: 현재 감지된 교통약자 클래스 목록 (MODE=debug,detail 일 때 타이머에 함께 표시).
+                      None 또는 빈 리스트이면 대괄호 안이 비워진다 (예: "12 []").
+    """
     global current_waiting_message, message_thread
 
     color = color or "00"
@@ -351,7 +366,8 @@ def show_waiting_message(message: str, color: str = "00", duration: int = 20, fo
         message_thread = None
 
     current_waiting_message = message
-    start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, duration, countdown_until)
+    start_message_with_timeout(message, color, font, weight, eff, ysz, fix, dly_interval, duration, countdown_until,
+                                mobility_classes=mobility_classes)
 
 
 # 30초 추기로 STOMP 기반 설정값 업데이트
@@ -1108,6 +1124,9 @@ def update_count():
         request_source = data.get("source", "cv")
         request_message = get_decoded_message(data.get("message")) if data.get("message") else None
         request_color = data.get("color")
+        # mobility_classes: cv_ffmpeg가 교통약자 감지 시 함께 전송하는 클래스 목록
+        # MODE=debug,detail 일 때 countdown 타이머에 "[휠체어]" 형태로 병기됨
+        request_mobility_classes: list = data.get("mobility_classes") or []
 
         # 인원수가 0보다 큰 경우 메시지 전송
         if detected_people_count > 0:
@@ -1124,7 +1143,8 @@ def update_count():
                                  datetime.fromtimestamp(button_active_until).strftime("%H:%M:%S"))
                 stop_default_display()
                 _countdown = button_active_until if (request_source == "button" and ENV_TYPE == "dev") else 0.0
-                show_waiting_message(display_message, display_color, duration=20, countdown_until=_countdown)
+                show_waiting_message(display_message, display_color, duration=20, countdown_until=_countdown,
+                                     mobility_classes=request_mobility_classes)
 
                 # 재실인원 최초 감지시에만 모터 STOP 전송
                 activate_command("STOP", 0.1)
@@ -1143,7 +1163,7 @@ def update_count():
                 button_active_until = time.time() + BUTTON_HOLD_SEC
                 _countdown = button_active_until if ENV_TYPE == "dev" else 0.0
                 show_waiting_message(display_message, display_color, duration=20, force_replace=True,
-                                     countdown_until=_countdown)
+                                     countdown_until=_countdown, mobility_classes=request_mobility_classes)
                 logging.info("[BUTTON] 교통약자 갱신 → %ss 후 만료 (%s) 메시지: '%s'",
                              BUTTON_HOLD_SEC,
                              datetime.fromtimestamp(button_active_until).strftime("%H:%M:%S"),
@@ -1222,7 +1242,17 @@ def display_default_message():
 
 # 메세지를 일정시간 유지 후 갱신하는 스레드 함수
 def start_message_with_timeout(message, color="00", font="00", weight="01", eff="090009000900", ysz="2", fix=1,
-                               dly_interval=60000, duration=60, countdown_until=0.0):
+                               dly_interval=60000, duration=60, countdown_until=0.0,
+                               mobility_classes: list | None = None):
+    """LED 전광판에 메시지를 전송하고, countdown_until이 설정된 경우 1초마다 타이머를 갱신한다.
+
+    countdown 표시 형식은 MODE 환경변수에 따라 달라진다:
+      - prod(기본)     : "{메시지} {남은초}s"  예) "교통약자 탑승대기 12s"
+      - debug          : "{남은초}"만 표시     예) "12"   ← 메시지·"초(s)" 단위 모두 생략
+      - debug,detail   : "{남은초} [{클래스}]" 예) "12 [휠체어]"
+                          mobility_classes 인자로 현재 감지된 교통약자 클래스 목록을 전달하면
+                          대괄호 안에 공백 구분으로 출력한다. 미감지 시에는 "12 []" 형태.
+    """
     def message_worker():
         global message_thread
         logging.info(f"start_message_with_timeout: 메시지 전송: '{message}'")
@@ -1238,7 +1268,19 @@ def start_message_with_timeout(message, color="00", font="00", weight="01", eff=
                     remaining = int(countdown_until - time.time())
                     if remaining <= 0:
                         break
-                    countdown_msg = f"{message} {remaining}s"
+
+                    # ── MODE별 타이머 표시 형식 ──────────────────────────
+                    if MODE_DEBUG_DETAIL:
+                        # debug,detail: 남은 초 + 현재 감지 클래스 목록 (예: "12 [휠체어]")
+                        classes_str = " ".join(mobility_classes) if mobility_classes else ""
+                        countdown_msg = f"{remaining} [{classes_str}]"
+                    elif MODE_DEBUG:
+                        # debug: 남은 초만 (메시지 텍스트·"s" 단위 제거)
+                        countdown_msg = f"{remaining}"
+                    else:
+                        # prod: 기존 형식 "{메시지} {남은초}s"
+                        countdown_msg = f"{message} {remaining}s"
+
                     cmd = encode_to_protocol(countdown_msg, "", color, font, weight, eff, ysz, fix, dly_interval)
                     send_command(cmd)
                     message_thread_stop.wait(timeout=1.0)
