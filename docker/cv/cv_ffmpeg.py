@@ -148,6 +148,13 @@ MOBILITY_ALLOWED_CLASSES: set[str] = (
 )
 logger.info(f"교통약자 감지 클래스: {MOBILITY_ALLOWED_CLASSES or '전체'}")
 
+# ── 교통약자 상태 머신 설정 ────────────────────────────────────
+# 교통약자가 화면에서 사라진 후 N 프레임 연속 미감지 시 cleared 처리
+MOBILITY_CLEAR_STREAK = int(os.getenv("MOBILITY_CLEAR_STREAK", "3"))
+# STOMP 교통약자 전용 destination
+MOBILITY_STOMP_DEST = os.getenv("MOBILITY_STOMP_DEST", "/api/iot/mobility")
+_mobility_clear_counter: int = 0  # 연속 미감지 프레임 카운터
+
 API_URL = os.getenv("API_URL")
 server_url = f"{API_URL}/update_count"
 encoded_password = urllib.parse.quote(PASSWORD_OPENCV) if PASSWORD_OPENCV else ""
@@ -174,6 +181,7 @@ class AppState:
     source: str = "camera"
     active_mode: str = "camera"
     stream_enabled: bool = True
+    mobility_visible: bool = False  # 교통약자 화면 내 존재 여부
 
 # ── Phase 2A: RadarSource 추상화 ──────────────────────────────
 class RadarSource:
@@ -466,6 +474,8 @@ class _DebugHandler(BaseHTTPRequestHandler):
             self._set_mode()
         elif self.path == "/stream_toggle":
             self._stream_toggle()
+        elif self.path == "/mobility_button":
+            self._mobility_button()
         else:
             self.send_response(404)
             self.end_headers()
@@ -479,6 +489,23 @@ class _DebugHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _mobility_button(self):
+        """POST /mobility_button — 교통약자 버튼 눌렸을 때 현재 화면에 교통약자가 보이는지 확인."""
+        classes = list(_last_mobility_found)
+        visible = len(classes) > 0
+        body = _json.dumps({
+            "mobility_visible": visible,
+            "classes": classes,
+            "mobility_visible_state": self.state.mobility_visible,
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        logger.info(f"[mobility_button] 확인 결과: visible={visible} classes={classes}")
 
     def _set_mode(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -584,6 +611,8 @@ class _DebugHandler(BaseHTTPRequestHandler):
             "env": ENV_TYPE,
             "active_mode": s.active_mode,
             "stream_enabled": s.stream_enabled,
+            "mobility_visible": s.mobility_visible,
+            "mobility_classes": list(_last_mobility_found),
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -917,6 +946,66 @@ async def send_stomp_message(destination, message, max_retries=3):
             else:
                 logger.error("STOMP 전송 최종 실패")
 
+# ── 교통약자 상태 머신 ────────────────────────────────────────
+def _handle_mobility_transition(
+    mobility_classes: list,
+    person_boxes: list,
+    state: "AppState",
+) -> None:
+    """교통약자 감지 상태 전이 처리.
+
+    - 미감지→감지 : STOMP mobility_detected 전송 (버튼 트리거)
+    - 감지→미감지 : STOMP mobility_cleared 전송, 표시 상태 결정
+      - 사람 있음 → display=승차대기
+      - 사람 없음 → display=clock
+    """
+    global _mobility_clear_counter
+
+    currently_found = len(mobility_classes) > 0
+
+    if currently_found:
+        # 연속 미감지 카운터 리셋
+        _mobility_clear_counter = 0
+
+        if not state.mobility_visible:
+            # ── 미감지 → 감지 전이 ──────────────────────────
+            state.mobility_visible = True
+            payload = {
+                "terminal_id": TERMINAL_ID,
+                "type": "mobility_detected",
+                "classes": mobility_classes,
+            }
+            logger.info(f"[mobility] 교통약자 감지 → 버튼 트리거: {mobility_classes}")
+            if not SKIP_SENDS:
+                asyncio.run(send_stomp_message(MOBILITY_STOMP_DEST, payload))
+            else:
+                logger.info(f"[SKIP] STOMP 스킵 (SKIP_SENDS) mobility_detected")
+    else:
+        if state.mobility_visible:
+            # 연속 미감지 카운터 증가
+            _mobility_clear_counter += 1
+            if _mobility_clear_counter >= MOBILITY_CLEAR_STREAK:
+                # ── 감지 → 미감지 전이 (확정) ────────────────
+                _mobility_clear_counter = 0
+                state.mobility_visible = False
+                person_present = len(person_boxes) > 0
+                display = "승차대기" if person_present else "clock"
+                payload = {
+                    "terminal_id": TERMINAL_ID,
+                    "type": "mobility_cleared",
+                    "display": display,
+                    "people_count": len(person_boxes),
+                }
+                logger.info(
+                    f"[mobility] 교통약자 사라짐 → display={display} "
+                    f"(사람 {len(person_boxes)}명)"
+                )
+                if not SKIP_SENDS:
+                    asyncio.run(send_stomp_message(MOBILITY_STOMP_DEST, payload))
+                else:
+                    logger.info(f"[SKIP] STOMP 스킵 (SKIP_SENDS) mobility_cleared display={display}")
+        # else: 원래부터 미감지 상태 → 무시
+
 # ── 초기화 ────────────────────────────────────────────────────
 state = AppState(stat_people_count=load_stat_count())
 last_reset_date = datetime.now().date()
@@ -996,6 +1085,9 @@ while True:
             continue
 
         boxes, annotated, mobility_classes = infer_once(frame, state)
+
+        # ── 교통약자 상태 머신 ─────────────────────────────
+        _handle_mobility_transition(mobility_classes, boxes, state)
 
         count, src = decide_count(len(boxes), state, radar_triggered)
         state.source = src if src else state.source
