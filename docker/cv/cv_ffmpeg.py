@@ -884,12 +884,18 @@ def post_update(count: int, radar_active: bool, source_str: str, mobility_classe
         return
     try:
         payload = {"count": count}
-        # MODE=debug,detail: main_ctl이 countdown 타이머에 클래스명을 함께 표시하도록 목록 전달
-        # MODE=debug       : message 필드 제외 (타이머 숫자만 표시 — main_ctl에서 처리)
-        # MODE=prod        : message 필드 제외 (기본 LED 메시지 사용)
-        if "debug,detail" in MODE and mobility_classes:
-            payload["mobility_classes"] = mobility_classes   # 예: ["휠체어"]
-            logger.info(f"[DEBUG,DETAIL] 교통약자 클래스 전달: {mobility_classes}")
+        # 교통약자 감지 시 MODE별 LED 표시 처리:
+        #   prod        → message="교통약자" 고정 4글자 전송
+        #   debug       → message 없음 (main_ctl 타이머 숫자만 표시)
+        #   debug,detail→ message 없음 + mobility_classes 전달 (타이머에 클래스명 병기)
+        if mobility_classes:
+            if "debug,detail" in MODE:
+                payload["mobility_classes"] = mobility_classes   # 예: ["휠체어"]
+                logger.info(f"[DEBUG,DETAIL] 교통약자 클래스 전달: {mobility_classes}")
+            elif "debug" not in MODE:
+                # prod: "교통약자" 4글자 고정 표시
+                payload["message"] = "교통약자"
+                logger.info("[prod] 교통약자 감지 → LED 메시지: 교통약자")
         response = requests.post(server_url, json=payload)
         if response.status_code == 200:
             logger.info(f"통합제어보드로 인원 수 전송 성공: {count}")
