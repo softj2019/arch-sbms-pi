@@ -1,5 +1,79 @@
 # 유지보수 로그
 
+## 2026-05-01 - LED 전등 릴레이 자동 점등/소등 고도화
+
+### 문제
+- `ENV_TYPE=dev` 환경에서 `schedule_device_control()`이 스케줄 루프를 통째로 스킵
+- 릴레이 ON/OFF가 전혀 동작하지 않아 현장에서 LED 전등 자동제어 불가
+- 로그에 아무것도 찍히지 않아 원인 파악 어려웠음
+
+### 원인
+`main_ctl.py` schedule_device_control() 내부:
+```python
+if ENV_TYPE == 'dev':
+    await asyncio.sleep(3)
+    continue   # ← 릴레이 제어 전체 스킵
+```
+
+### 해결 (commit: eb18ec6)
+- `if ENV_TYPE == 'dev': continue` 블록 제거 (10줄 삭제)
+- ENV_TYPE 무관하게 릴레이 자동 점등/소등 실행
+- STOMP 연결 시 서버 on/off 시간 적용, 미연결 시 기본값 `17:00`/`04:00` 사용
+
+### 검증
+```
+INFO - schedule_device_control: [relay] 상태확인 - 현재=OFF, 목표=ON, 설정시간=17:00~04:00
+INFO - relay_board: pin 20 → ON (LOW)
+INFO - schedule_device_control: LED 전등 ON [relay] (점등시간: 17:00 ~ 04:00)
+```
+서비스 재시작 직후 17:02에 즉시 릴레이 ON 확인
+
+---
+
+## 2026-05-01 - LED 릴레이 스케줄 동작 로그 추가
+
+### 배경
+릴레이가 언제 ON/OFF 됐는지 로그가 없어 현장 문제 진단이 어려움
+
+### 변경 (commit: a241a4a)
+`schedule_device_control()`에 `_periodic` 로그 추가 (약 60초마다 출력):
+- manual override 중: 남은 시간 출력
+- relay 상태 확인: 현재 상태 / 목표 상태 / 설정 시간 출력
+- LED ON/OFF 전환 시: 즉시 INFO 로그
+
+### 로그 위치
+```
+~/gunpo/docker/core/logs/main_ctl/2605/260501.log
+```
+(journalctl이 아닌 파일 로그)
+
+---
+
+## 2026-05-03 - SSH 역방향 터널 복구 절차 확인
+
+### 증상
+`ssh sola-tunnel` 접속 시 `Connection refused` — 터널 포트(20022)는 열려있으나 sola-1 미연결
+
+### 원인
+sola-1 재부팅 후 `reverse-tunnel.service` 자동 재연결 실패
+
+### 복구 절차
+1. Raspberry Pi Connect로 sola-1 직접 접속
+2. 터널 서비스 재시작:
+   ```bash
+   sudo systemctl restart reverse-tunnel.service
+   ```
+3. 로컬에서 확인:
+   ```bash
+   ssh sola-tunnel "echo OK"
+   ```
+
+### 서비스명 참고
+- 터널: `reverse-tunnel.service` (autossh-tunnel.service 아님)
+- SSH: `ssh.service`
+
+---
+
 ## 2026-04-20 - main_ctl WebSocket 성능 이슈
 
 ### 문제

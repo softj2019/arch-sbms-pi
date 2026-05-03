@@ -9,7 +9,7 @@
 | `/update_count` POST | ❌ 스킵 | ❌ 스킵 | ✅ 전송 |
 | STOMP WebSocket | ❌ 스킵 | ❌ 스킵 | ✅ 전송 |
 | 디버그 스트림 (8089) | ✅ | ✅ `192.168.10.100:8089` | ❌ |
-| FAN/LED 자동제어 | — | ❌ 비활성 | ✅ |
+| FAN/LED 자동제어 | — | ✅ 활성 (ENV_TYPE 무관) | ✅ |
 | 레이더 GPIO | ❌ (disabled) | ✅ (GPIO3) | ✅ (GPIO3) |
 
 ---
@@ -104,12 +104,18 @@ rm -rf ~/.cache/sbms-cv-env
 
 | 항목 | 값 |
 |------|-----|
-| SSH | `ssh admin@192.168.10.100` |
+| SSH (로컬망) | `ssh sola` → `192.168.10.109` |
+| SSH (원격 터널) | `ssh sola-tunnel` → archivsoft 경유 20022 포트 |
+| VNC (원격) | `ssh -f -N sola-vnc` 후 `localhost:5900` |
+| Pi Connect | Raspberry Pi Connect 웹 접속 (터널 불가 시 대안) |
 | hostname | `sola-1` |
-| 코드 경로 | `/home/admin/gunpo/docker/cv/cv_ffmpeg.py` |
+| 코드 경로 | `/home/admin/gunpo/` |
 | venv | `/home/admin/gunpo-ori/venv` |
-| 서비스 | `cv2_ffmpeg.service` |
+| 서비스 | `cv2_ffmpeg.service`, `main_ctl.service` |
+| git remote | `github` → `https://github.com/softj2019/arch-sbms-pi.git` |
+| git branch | `dev-new` |
 | 현재 ENV_TYPE | `dev` |
+| 앱 로그 경로 | `~/gunpo/docker/core/logs/main_ctl/2605/YYMMDD.log` |
 
 ### cv_ffmpeg.py 단일 파일 배포 (빠름)
 
@@ -130,10 +136,15 @@ ssh admin@192.168.10.100 "journalctl -f --no-pager -u cv2_ffmpeg.service"
 ### 전체 코드 배포 (git pull)
 
 ```bash
-ssh admin@192.168.10.100 "
-  cd /home/admin/gunpo &&
-  git pull github dev-mac &&
-  sudo systemctl restart cv2_ffmpeg.service main_ctl
+# 로컬에서 push
+git push origin dev-new
+
+# sola-1에서 pull 및 재시작
+ssh sola-tunnel "
+  cd ~/gunpo &&
+  git fetch github &&
+  git reset --hard github/dev-new &&
+  sudo systemctl restart cv2_ffmpeg.service main_ctl.service
 "
 ```
 
@@ -178,18 +189,23 @@ ssh admin@192.168.10.100 "
 ## 로그 모니터링
 
 ```bash
-# 실시간 로그
-ssh admin@192.168.10.100 "journalctl -f --no-pager -u cv2_ffmpeg.service"
+# main_ctl 앱 로그 (파일, 날짜별)
+ssh sola-tunnel "tail -f ~/gunpo/docker/core/logs/main_ctl/2605/$(date +%y%m%d).log"
 
-# 최근 50줄
-ssh admin@192.168.10.100 "journalctl -n 50 --no-pager -u cv2_ffmpeg.service"
+# cv2_ffmpeg 서비스 로그 (journalctl)
+ssh sola-tunnel "journalctl -f --no-pager -u cv2_ffmpeg.service"
 
 # 에러만
-ssh admin@192.168.10.100 "journalctl --no-pager -u cv2_ffmpeg.service -p err"
+ssh sola-tunnel "journalctl --no-pager -u cv2_ffmpeg.service -p err"
 
-# 디버그 스트림 상태 (dev 모드)
-curl http://192.168.10.100:8089/state.json
+# 전체 서비스 상태 한번에 확인
+ssh sola-tunnel "systemctl is-active cv2_ffmpeg.service main_ctl.service reverse-tunnel.service"
+
+# 디버그 스트림 상태 (dev 모드, 로컬망)
+curl http://192.168.10.109:8089/state.json
 ```
+
+> **주의**: main_ctl 앱 로그는 journalctl이 아닌 파일에 기록됨. 경로: `~/gunpo/docker/core/logs/main_ctl/YYMM/YYMMDD.log`
 
 ---
 
@@ -204,10 +220,10 @@ curl http://192.168.10.100:8089/state.json
 
 전체 재시작:
 ```bash
-ssh admin@192.168.10.100 "sudo systemctl restart cv2_ffmpeg main_ctl button_short_trigger gunpo-network-watchdog"
+ssh sola-tunnel "sudo systemctl restart cv2_ffmpeg.service main_ctl.service button_short_trigger.service gunpo-network-watchdog.service"
 ```
 
 전체 상태:
 ```bash
-ssh admin@192.168.10.100 "systemctl is-active cv2_ffmpeg main_ctl button_short_trigger gunpo-network-watchdog"
+ssh sola-tunnel "systemctl is-active cv2_ffmpeg.service main_ctl.service button_short_trigger.service gunpo-network-watchdog.service reverse-tunnel.service"
 ```
