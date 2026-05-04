@@ -107,6 +107,7 @@ rm -rf ~/.cache/sbms-cv-env
 | SSH (로컬망) | `ssh sola` → `192.168.10.109` |
 | SSH (원격 터널) | `ssh sola-tunnel` → archivsoft 경유 20022 포트 |
 | VNC (원격) | `ssh -f -N sola-vnc` 후 `localhost:5900` |
+| 디버그 스트림 (원격) | `ssh -f -N sola-8089` 후 `http://localhost:8089` |
 | Pi Connect | Raspberry Pi Connect 웹 접속 (터널 불가 시 대안) |
 | hostname | `sola-1` |
 | 코드 경로 | `/home/admin/gunpo/` |
@@ -206,6 +207,49 @@ curl http://192.168.10.109:8089/state.json
 ```
 
 > **주의**: main_ctl 앱 로그는 journalctl이 아닌 파일에 기록됨. 경로: `~/gunpo/docker/core/logs/main_ctl/YYMM/YYMMDD.log`
+
+---
+
+## 로컬 SSH 포워딩 (개발 PC)
+
+### ~/.ssh/config 등록 항목
+
+| Host | 용도 | 포워딩 |
+|------|------|--------|
+| `sola-tunnel` | SSH 접속 (범용) | — |
+| `sola-vnc` | VNC 화면 공유 | `localhost:5900` |
+| `sola-8089` | 디버그 스트림 | `localhost:8089` |
+
+### 수동 실행
+
+```bash
+ssh -f -N sola-vnc     # VNC: localhost:5900
+ssh -f -N sola-8089    # 디버그 스트림: http://localhost:8089
+```
+
+### 자동 실행 (Windows)
+
+`scripts/sola-tunnels.bat` 실행 또는 Windows 작업 스케줄러에 등록:
+
+```
+작업 스케줄러 → 새 작업 → 트리거: 로그온 시 → 동작: sola-tunnels.bat 실행
+```
+
+### 포워딩 상태 확인
+
+```powershell
+# 5900, 8089 포트 리스닝 여부 확인
+netstat -ano | findstr "5900 8089"
+```
+
+### 끊김 시 재연결
+
+```bash
+# 기존 프로세스 종료 후 재실행
+taskkill /F /IM ssh.exe   # Windows
+ssh -f -N sola-vnc
+ssh -f -N sola-8089
+```
 
 ---
 

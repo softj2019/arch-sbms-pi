@@ -1,5 +1,38 @@
 # 유지보수 로그
 
+## 2026-05-04 - 로컬 SSH 포워딩 config 정비 및 배치 스크립트 추가
+
+### 배경
+개발 PC에서 VNC/디버그 스트림 접속 시 매번 SSH 포워딩 명령을 수동 실행해야 하는 불편 해소
+
+### 변경 내용
+
+**~/.ssh/config 추가**
+```
+Host sola-8089
+    HostName 127.0.0.1
+    Port 20022
+    User admin
+    ProxyJump archivsoft
+    LocalForward 8089 localhost:8089
+```
+- 기존: `sola-vnc` (5900) 만 등록되어 있었음
+- 추가: `sola-8089` (8089 디버그 스트림) 등록
+
+**scripts/sola-tunnels.bat 생성**
+- 기존 포트 점유 프로세스 자동 정리 후 VNC + 디버그 스트림 터널 일괄 실행
+- 실행: `scripts\sola-tunnels.bat`
+- 자동화: Windows 작업 스케줄러 → 로그온 시 실행으로 등록 가능
+
+### 접속 정보
+| 용도 | 명령 | 주소 |
+|------|------|------|
+| VNC | `ssh -f -N sola-vnc` | `localhost:5900` |
+| 디버그 스트림 | `ssh -f -N sola-8089` | `http://localhost:8089` |
+| 일괄 실행 | `scripts\sola-tunnels.bat` | — |
+
+---
+
 ## 2026-05-04 - reverse-tunnel.service 자동 복구 불가 문제 해결
 
 ### 문제
