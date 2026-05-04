@@ -134,6 +134,8 @@ else:
 
 # ── 교통약자 추론 주기 설정 (N프레임마다 1회) ─────────────────
 MOBILITY_INFER_INTERVAL = int(os.getenv("MOBILITY_INFER_INTERVAL", "5"))
+# 교통약자 모델 신뢰도 임계값 (오탐 방지: 낮을수록 false positive 증가)
+MOBILITY_CONF = float(os.getenv("MOBILITY_CONF", "0.60"))
 _mobility_frame_counter = 0
 _last_mobility_found: list = []
 
@@ -857,7 +859,7 @@ def infer_once(frame, state: AppState):
         mob_names = mob_model.names
         mob_classes = {0: "휠체어", 1: "목발"} if mobility_model is not None else None
 
-        mob_results = mob_model.predict(frame_resized, conf=0.45, imgsz=INFER_WIDTH, verbose=False)
+        mob_results = mob_model.predict(frame_resized, conf=MOBILITY_CONF, imgsz=INFER_WIDTH, verbose=False)
         found = []
         for box in mob_results[0].boxes.data:
             x1, y1, x2, y2, conf, cls_id = box.tolist()
@@ -971,6 +973,13 @@ def _handle_mobility_transition(
     global _mobility_clear_counter
 
     currently_found = len(mobility_classes) > 0
+
+    # 사람이 한 명도 감지되지 않으면 교통약자 오탐으로 간주하고 무시
+    if currently_found and len(person_boxes) == 0:
+        logger.info(
+            f"[mobility] 교통약자 감지됐으나 person=0 → 오탐 무시 {mobility_classes}"
+        )
+        currently_found = False
 
     if currently_found:
         # 연속 미감지 카운터 리셋
