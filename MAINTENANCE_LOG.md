@@ -1,5 +1,52 @@
 # 유지보수 로그
 
+## 2026-05-04 - reverse-tunnel.service 자동 복구 불가 문제 해결
+
+### 문제
+sola-1 재부팅 후 `ssh sola-tunnel` 접속이 안 되고, Pi Connect로 접속해서 수동으로 `sudo systemctl restart reverse-tunnel.service`를 실행해야만 연결됨
+
+### 원인 (2가지)
+
+**1. archivsoft에 죽은 포트가 잔류**
+- sola-1 재부팅 시 기존 SSH 연결이 archivsoft에서 즉시 정리되지 않음
+- 20022 포트가 잔류하여 새 연결 시 `remote port forwarding failed for listen port 20022` 오류 반복
+
+**2. systemd StartLimitBurst 초과**
+- `StartLimitIntervalSec=10s` + `StartLimitBurst=5` 기본값
+- 10초 안에 5번 연속 실패 → systemd가 재시작을 포기하고 `failed` 상태로 멈춤
+- 수동 `systemctl restart` 없이는 복구 불가
+
+### 해결
+
+**archivsoft sshd_config 수정** — 죽은 연결 90초 안에 자동 정리:
+```
+ClientAliveInterval 30
+ClientAliveCountMax 3
+```
+```bash
+sudo systemctl reload sshd
+```
+
+**sola-1 systemd override** — 재시작 횟수 제한 해제:
+```bash
+# /etc/systemd/system/reverse-tunnel.service.d/override.conf
+[Unit]
+StartLimitIntervalSec=0
+
+[Service]
+RestartSec=10
+```
+```bash
+sudo systemctl daemon-reload
+```
+
+### 최종 상태
+- `StartLimitIntervalUSec=0` 확인 → 무한 재시도
+- 서비스 active (running) 확인
+- 이후 sola-1 재부팅 시 수동 개입 없이 자동 복구됨
+
+---
+
 ## 2026-05-01 - LED 전등 릴레이 자동 점등/소등 고도화
 
 ### 문제

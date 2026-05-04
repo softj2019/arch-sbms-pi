@@ -209,6 +209,40 @@ curl http://192.168.10.109:8089/state.json
 
 ---
 
+## SSH 역방향 터널 관리
+
+### 터널 서비스 구성
+
+| 항목 | 값 |
+|------|-----|
+| 서비스명 | `reverse-tunnel.service` |
+| override 경로 | `/etc/systemd/system/reverse-tunnel.service.d/override.conf` |
+| autossh 포트 | `20022` (archivsoft → sola-1:22) |
+| 재시작 제한 | `StartLimitIntervalSec=0` (무제한 재시도) |
+
+### 터널 끊김 확인
+
+```bash
+# 로컬에서
+ssh sola-tunnel "echo OK"
+
+# 실패 시 archivsoft 포트 확인
+ssh archivsoft "ss -tlnp | grep 20022"
+```
+
+### 터널 복구 (Pi Connect 접속 후)
+
+```bash
+sudo systemctl restart reverse-tunnel.service
+```
+
+### 재발 방지 설정 (이미 적용됨 - 2026-05-04)
+
+- **archivsoft**: `ClientAliveInterval 30` / `ClientAliveCountMax 3` → 죽은 연결 90초 안에 정리
+- **sola-1**: `StartLimitIntervalSec=0` → systemd 재시작 포기 없음
+
+---
+
 ## 서비스 전체 목록
 
 | 서비스 | 역할 | venv | 스크립트 |
