@@ -102,23 +102,21 @@ def accumulate_heat(heat: np.ndarray, detections: list) -> None:
         heat[y1:y2, x1:x2] += conf
 
 
-def save_cumulative_heatmap(heat: np.ndarray, video_path: str,
-                             mid_frame: int, out_path: Path) -> None:
+def save_cumulative_heatmap(heat: np.ndarray, bg_frame: np.ndarray | None,
+                             out_path: Path) -> None:
     heat_norm = np.clip(heat / heat.max() * 255, 0, 255).astype(np.uint8)
     heat_color = cv2.applyColorMap(heat_norm, cv2.COLORMAP_JET)
 
-    cap = cv2.VideoCapture(video_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, mid_frame)
-    ret, bg = cap.read()
-    cap.release()
-
-    if ret:
-        bg = cv2.resize(bg, (heat_color.shape[1], heat_color.shape[0]))
+    if bg_frame is not None:
+        bg = cv2.resize(bg_frame, (heat_color.shape[1], heat_color.shape[0]))
         overlay = cv2.addWeighted(bg, 0.5, heat_color, 0.6, 0)
-        overlay = put_kr_text(overlay, "누적 감지 히트맵",
-                              (10, 8), font_size=24, color_bgr=(255, 255, 255))
-        cv2.imwrite(str(out_path), overlay)
-        print(f"누적 히트맵 저장: {out_path}")
+    else:
+        overlay = heat_color
+
+    overlay = put_kr_text(overlay, "누적 감지 히트맵",
+                          (10, 8), font_size=24, color_bgr=(255, 255, 255))
+    cv2.imwrite(str(out_path), overlay)
+    print(f"누적 히트맵 저장: {out_path}")
 
 
 # ── 메인 ───────────────────────────────────────────────────────
@@ -163,13 +161,17 @@ def main() -> None:
 
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps_v = cap.get(cv2.CAP_PROP_FPS) or 25
-    print(f"영상: {total}프레임, {fps_v:.1f}fps → 최대 {args.max_frames}프레임 처리\n")
+    is_live = total <= 0  # RTSP 등 스트림은 frame count 음수/0
+    limit = args.max_frames if is_live else min(total, args.max_frames)
+    src_info = "스트림(라이브)" if is_live else f"{total}프레임"
+    print(f"영상: {src_info}, {fps_v:.1f}fps → 최대 {args.max_frames}프레임 처리\n")
 
     saved = 0
     frame_idx = 0
     cumulative_heat: np.ndarray | None = None
+    mid_bg_frame: np.ndarray | None = None
 
-    while frame_idx < min(total, args.max_frames):
+    while frame_idx < limit:
         ret, frame = cap.read()
         if not ret:
             break
@@ -180,9 +182,16 @@ def main() -> None:
         # ── 교통약자 추론 ──────────────────────────────────────
         mob_results = mob_model.predict(frame, conf=args.conf,
                                         imgsz=args.imgsz, verbose=False)
+        fh, fw = frame.shape[:2]
+        frame_area = fw * fh
         mob_dets = []
         for box in mob_results[0].boxes.data.tolist():
             x1, y1, x2, y2, conf, cls_id = box
+            # 면적 필터: 프레임의 20% 초과 bbox는 오탐으로 제거
+            if (x2 - x1) * (y2 - y1) > frame_area * 0.20:
+                print(f"  [skip] bbox 과대 {int((x2-x1)*(y2-y1))}/{frame_area} "
+                      f"({(x2-x1)*(y2-y1)/frame_area:.1%}) cls={int(cls_id)} conf={conf:.2f}")
+                continue
             mob_dets.append((int(x1), int(y1), int(x2), int(y2), conf, cls_id))
         all_detections.extend(mob_dets)
 
@@ -200,6 +209,10 @@ def main() -> None:
 
         if not all_detections:
             continue
+
+        # 히트맵 배경용 중간 프레임 보관 (첫 감지 프레임)
+        if mid_bg_frame is None:
+            mid_bg_frame = frame.copy()
 
         # ── 그리기 ────────────────────────────────────────────
         annotated = frame.copy()
@@ -244,8 +257,7 @@ def main() -> None:
     # ── 누적 히트맵 저장 ──────────────────────────────────────
     if cumulative_heat is not None and cumulative_heat.max() > 0:
         hm_path = out_dir / "heatmap_cumulative.jpg"
-        save_cumulative_heatmap(cumulative_heat, args.video,
-                                min(frame_idx // 2, total - 1), hm_path)
+        save_cumulative_heatmap(cumulative_heat, mid_bg_frame, hm_path)
 
     print(f"\n완료: {saved}개 프레임 저장 → {out_dir}")
 

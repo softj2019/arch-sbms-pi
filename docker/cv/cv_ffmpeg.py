@@ -22,6 +22,8 @@ from ultralytics import YOLO
 from dataclasses import dataclass, field
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+import numpy as np
+from PIL import ImageFont, ImageDraw, Image
 import json as _json
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -29,6 +31,22 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from websocket_endpoint import select_primary_websocket_url, websocket_connection
+
+# ── 한글 텍스트 렌더링 헬퍼 ──────────────────────────────────────
+_KO_FONT_PATH = "/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf"
+if not os.path.exists(_KO_FONT_PATH):
+    _KO_FONT_PATH = "/usr/share/fonts/truetype/unfonts-core/UnBatang.ttf"
+try:
+    _ko_font = ImageFont.truetype(_KO_FONT_PATH, 20)
+except Exception:
+    _ko_font = ImageFont.load_default()
+
+def cv2_put_korean(img, text: str, pos: tuple, color: tuple) -> None:
+    """OpenCV 이미지에 한글 텍스트를 PIL로 렌더링한다."""
+    pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_img)
+    draw.text(pos, text, font=_ko_font, fill=(color[2], color[1], color[0]))
+    img[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 # ── 기본 설정 로딩 ────────────────────────────────────────────
 load_dotenv()
@@ -830,12 +848,21 @@ def infer_once(frame, state: AppState):
     state.last_inference_ms = elapsed * 1000
 
     boxes = []
+    # 휠체어 탄 사람이 기본 모델에서 bicycle/motorcycle 등으로 분류될 수 있으므로
+    # 이동수단 관련 클래스도 유효한 사람으로 간주
+    _PERSON_LIKE_CLASSES = {0, 1, 3}  # COCO: 0=person, 1=bicycle, 3=motorcycle
+    any_person_like = False
+    _detected_base_classes = []
     for box in results[0].boxes.data:
         x1, y1, x2, y2, conf, cls_id = box.tolist()
         x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
         if scale < 1.0:
             x1, y1, x2, y2 = int(x1 / scale), int(y1 / scale), int(x2 / scale), int(y2 / scale)
-        # person(0) 필터
+        _cls = int(cls_id)
+        _detected_base_classes.append(f"{model.names.get(_cls, _cls)}({_cls})")
+        if _cls in _PERSON_LIKE_CLASSES:
+            any_person_like = True
+        # person(0) 필터 — 재실 카운트는 person만
         if int(cls_id) != 0:
             continue
         bw, bh = x2 - x1, y2 - y1
@@ -859,7 +886,8 @@ def infer_once(frame, state: AppState):
         mob_names = mob_model.names
         mob_classes = {0: "휠체어", 1: "목발"} if mobility_model is not None else None
 
-        mob_results = mob_model.predict(frame_resized, conf=MOBILITY_CONF, imgsz=INFER_WIDTH, verbose=False)
+        # conf=0.30 으로 넓게 잡아 모든 감지 로그 → 실제 액션은 MOBILITY_CONF 이상만
+        mob_results = mob_model.predict(frame_resized, conf=0.30, imgsz=INFER_WIDTH, verbose=False)
         found = []
         for box in mob_results[0].boxes.data:
             x1, y1, x2, y2, conf, cls_id = box.tolist()
@@ -869,15 +897,47 @@ def infer_once(frame, state: AppState):
             else:
                 class_name = mob_names.get(cls_id, "").lower()
                 kr = MOBILITY_LABEL_KR.get(class_name) if class_name in MOBILITY_AID_CLASSES else None
-            if kr and kr not in found:
+            if kr is None:
+                continue
+            # 면적 필터: bbox가 프레임 면적의 20% 초과 시 오탐으로 간주
+            fh, fw = frame_resized.shape[:2]
+            if (x2 - x1) * (y2 - y1) > fw * fh * 0.20:
+                logger.info(
+                    f"[mobility-skip] {kr} bbox 과대 "
+                    f"{int((x2-x1)*(y2-y1))}/{fw*fh} "
+                    f"({(x2-x1)*(y2-y1)/(fw*fh):.1%}) → 무시"
+                )
+                continue
+            # conf 로그 (임계값 미달도 표시)
+            if conf < MOBILITY_CONF:
+                logger.info(f"[mobility-low] {kr} conf={conf:.2f} (임계값 {MOBILITY_CONF} 미달 → 무시)")
+                # dev 모드: 낮은 conf도 회색 박스로 표시
+                if ENV_TYPE == "dev":
+                    sx, sy, ex, ey = int(x1), int(y1), int(x2), int(y2)
+                    if scale < 1.0:
+                        sx, sy, ex, ey = int(sx/scale), int(sy/scale), int(ex/scale), int(ey/scale)
+                    cv2.rectangle(annotated, (sx, sy), (ex, ey), (128, 128, 128), 1)
+                    label = f"{kr} {conf:.2f}(low)"
+                    cv2_put_korean(annotated, label, (sx, max(sy - 24, 0)), (128, 128, 128))
+                continue
+            if kr not in found:
                 if not MOBILITY_ALLOWED_CLASSES or kr in MOBILITY_ALLOWED_CLASSES:
                     found.append(kr)
+            # dev 모드: 교통약자 박스를 annotated 위에 주황색으로 오버레이
+            if ENV_TYPE == "dev":
+                sx, sy, ex, ey = int(x1), int(y1), int(x2), int(y2)
+                if scale < 1.0:
+                    sx, sy, ex, ey = int(sx/scale), int(sy/scale), int(ex/scale), int(ey/scale)
+                cv2.rectangle(annotated, (sx, sy), (ex, ey), (0, 165, 255), 2)
+                label = f"{kr} {conf:.2f}"
+                cv2_put_korean(annotated, label, (sx, max(sy - 24, 0)), (0, 165, 255))
         _last_mobility_found = found
         if found:
             logger.info(f"[교통약자 감지] {found}")
 
+    state._last_base_classes = _detected_base_classes
     logger.info(f"감지된 인원 수: {len(boxes)}")
-    return boxes, annotated, _last_mobility_found
+    return boxes, annotated, _last_mobility_found, any_person_like
 
 
 def post_update(count: int, radar_active: bool, source_str: str, mobility_classes: list = None):
@@ -895,9 +955,10 @@ def post_update(count: int, radar_active: bool, source_str: str, mobility_classe
                 payload["mobility_classes"] = mobility_classes   # 예: ["휠체어"]
                 logger.info(f"[DEBUG,DETAIL] 교통약자 클래스 전달: {mobility_classes}")
             elif "debug" not in MODE:
-                # prod: "교통약자" 4글자 고정 표시
+                # prod: "교통약자" 4글자 고정 표시 (붉은색 — 버튼과 동일 color="01")
                 payload["message"] = "교통약자"
-                logger.info("[prod] 교통약자 감지 → LED 메시지: 교통약자")
+                payload["color"] = "01"
+                logger.info("[prod] 교통약자 감지 → LED 메시지: 교통약자 (color=01)")
         response = requests.post(server_url, json=payload)
         if response.status_code == 200:
             logger.info(f"통합제어보드로 인원 수 전송 성공: {count}")
@@ -962,6 +1023,7 @@ def _handle_mobility_transition(
     mobility_classes: list,
     person_boxes: list,
     state: "AppState",
+    any_person_like: bool = False,
 ) -> None:
     """교통약자 감지 상태 전이 처리.
 
@@ -974,10 +1036,11 @@ def _handle_mobility_transition(
 
     currently_found = len(mobility_classes) > 0
 
-    # 사람이 한 명도 감지되지 않으면 교통약자 오탐으로 간주하고 무시
-    if currently_found and len(person_boxes) == 0:
+    # person/bicycle/motorcycle 어느 것도 없으면 오탐으로 간주하고 무시
+    if currently_found and not any_person_like:
         logger.info(
-            f"[mobility] 교통약자 감지됐으나 person=0 → 오탐 무시 {mobility_classes}"
+            f"[mobility] 교통약자 감지됐으나 person/bicycle/motorcycle=0 → 오탐 무시 "
+            f"{mobility_classes} | 기본모델 감지: {getattr(state, '_last_base_classes', [])}"
         )
         currently_found = False
 
@@ -1102,10 +1165,10 @@ while True:
             time.sleep(0.1)
             continue
 
-        boxes, annotated, mobility_classes = infer_once(frame, state)
+        boxes, annotated, mobility_classes, any_person_like = infer_once(frame, state)
 
         # ── 교통약자 상태 머신 ─────────────────────────────
-        _handle_mobility_transition(mobility_classes, boxes, state)
+        _handle_mobility_transition(mobility_classes, boxes, state, any_person_like)
 
         count, src = decide_count(len(boxes), state, radar_triggered)
         state.source = src if src else state.source

@@ -1304,8 +1304,9 @@ def start_message_with_timeout(message, color="00", font="00", weight="01", eff=
                         # debug: 남은 초만 (메시지 텍스트·"s" 단위 제거)
                         countdown_msg = f"{remaining}"
                     else:
-                        # prod: 기존 형식 "{메시지} {남은초}s"
-                        countdown_msg = f"{message} {remaining}s"
+                        # prod: 타이머 없이 메시지만 고정 표시
+                        message_thread_stop.wait(timeout=1.0)
+                        continue
 
                     cmd = encode_to_protocol(countdown_msg, "", color, font, weight, eff, ysz, fix, dly_interval)
                     send_command(cmd)

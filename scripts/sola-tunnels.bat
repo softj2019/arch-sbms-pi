@@ -11,15 +11,16 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8089 "  ^| findstr "LISTENI
 timeout /t 1 /nobreak >nul
 
 echo [sola-tunnels] VNC 터널 시작 (localhost:5900)...
-start "" ssh -f -N sola-vnc
+ssh -f -N sola-vnc
 
 echo [sola-tunnels] 디버그 스트림 터널 시작 (localhost:8089)...
-start "" ssh -f -N sola-8089
+ssh -f -N sola-8089
 
 timeout /t 2 /nobreak >nul
 
 echo [sola-tunnels] 포트 상태 확인:
-netstat -ano | findstr ":5900 \|:8089 " | findstr "LISTENING"
+netstat -ano | findstr ":5900 " | findstr "LISTENING"
+netstat -ano | findstr ":8089 " | findstr "LISTENING"
 
 echo.
 echo [sola-tunnels] 완료
