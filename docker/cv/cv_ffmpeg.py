@@ -943,17 +943,16 @@ def infer_once(frame, state: AppState):
     return boxes, annotated, _last_mobility_found, any_person_like
 
 
-def post_update(count: int, radar_active: bool, source_str: str, mobility_classes: list = None):
+def post_update(count: int, radar_active: bool, source_str: str, mobility_classes: list = None,
+                request_source: str = "cv", mobility_cleared: bool = False):
     if SKIP_SENDS:
-        logger.info(f"[SKIP] POST 스킵 count={count} radar={radar_active} src={source_str}")
+        logger.info(f"[SKIP] POST 스킵 count={count} radar={radar_active} src={source_str} req_src={request_source}")
         return
     try:
-        payload = {"count": count}
-        # 교통약자 감지 시 MODE별 LED 표시 처리:
-        #   prod        → message="교통약자" 고정 4글자 전송
-        #   debug       → message 없음 (main_ctl 타이머 숫자만 표시)
-        #   debug,detail→ message 없음 + mobility_classes 전달 (타이머에 클래스명 병기)
-        if mobility_classes:
+        payload = {"count": count, "source": request_source}
+        if mobility_cleared:
+            payload["mobility_cleared"] = True
+        elif mobility_classes:
             if "debug,detail" in MODE:
                 payload["mobility_classes"] = mobility_classes   # 예: ["휠체어"]
                 logger.info(f"[DEBUG,DETAIL] 교통약자 클래스 전달: {mobility_classes}")
@@ -1062,7 +1061,7 @@ def _handle_mobility_transition(
                 # ── 미감지 → 감지 전이 확정 ──────────────────
                 _mobility_confirm_counter = 0
                 state.mobility_visible = True
-                payload = {
+                stomp_payload = {
                     "terminal_id": TERMINAL_ID,
                     "type": "mobility_detected",
                     "classes": mobility_classes,
@@ -1072,9 +1071,16 @@ def _handle_mobility_transition(
                     f"→ 버튼 트리거: {mobility_classes}"
                 )
                 if not SKIP_SENDS:
-                    asyncio.run(send_stomp_message(MOBILITY_STOMP_DEST, payload))
+                    asyncio.run(send_stomp_message(MOBILITY_STOMP_DEST, stomp_payload))
                 else:
                     logger.info(f"[SKIP] STOMP 스킵 (SKIP_SENDS) mobility_detected")
+                # 즉시 HTTP POST → main_ctl [교통약자] 우선 표시 트리거 (force_replace)
+                threading.Thread(
+                    target=post_update,
+                    args=(len(person_boxes), False, "camera"),
+                    kwargs={"mobility_classes": mobility_classes, "request_source": "camera_mobility"},
+                    daemon=True,
+                ).start()
         else:
             # 이미 교통약자 상태 — confirm 카운터만 리셋 (중복 전송 방지)
             _mobility_confirm_counter = 0
@@ -1094,7 +1100,7 @@ def _handle_mobility_transition(
                 state.mobility_visible = False
                 person_present = len(person_boxes) > 0
                 display = "승차대기" if person_present else "clock"
-                payload = {
+                stomp_payload = {
                     "terminal_id": TERMINAL_ID,
                     "type": "mobility_cleared",
                     "display": display,
@@ -1105,9 +1111,16 @@ def _handle_mobility_transition(
                     f"→ display={display} (사람 {len(person_boxes)}명)"
                 )
                 if not SKIP_SENDS:
-                    asyncio.run(send_stomp_message(MOBILITY_STOMP_DEST, payload))
+                    asyncio.run(send_stomp_message(MOBILITY_STOMP_DEST, stomp_payload))
                 else:
                     logger.info(f"[SKIP] STOMP 스킵 (SKIP_SENDS) mobility_cleared display={display}")
+                # 즉시 HTTP POST → main_ctl 이탈 처리 트리거
+                threading.Thread(
+                    target=post_update,
+                    args=(len(person_boxes), False, "camera"),
+                    kwargs={"request_source": "camera_mobility", "mobility_cleared": True},
+                    daemon=True,
+                ).start()
         # else: 원래부터 미감지 상태 → 무시
 
 # ── 초기화 ────────────────────────────────────────────────────

@@ -1143,7 +1143,6 @@ def update_count():
         logging.info("[update_count] Emergency mode activated. Stopping...")
         return jsonify({"status": "error", "message": "Emergency mode activated. Stopping update_count."}), 200
     try:
-
         # 클라이언트에서 전송된 데이터 처리
         data = request.json
         detected_people_count = data.get('count', 0)
@@ -1153,6 +1152,24 @@ def update_count():
         # mobility_classes: cv_ffmpeg가 교통약자 감지 시 함께 전송하는 클래스 목록
         # MODE=debug,detail 일 때 countdown 타이머에 "[휠체어]" 형태로 병기됨
         request_mobility_classes: list = data.get("mobility_classes") or []
+        # mobility_cleared: 카메라가 교통약자 이탈 확정 시 True로 전송
+        mobility_cleared: bool = bool(data.get("mobility_cleared", False))
+
+        # ── 교통약자 이탈 확정 신호 처리 ─────────────────────────
+        # cv_ffmpeg가 MOBILITY_CLEAR_STREAK 연속 미감지 후 보내는 신호
+        if mobility_cleared and cv_count_screen_action == 1:
+            button_active_until = 0.0  # 버튼 타이머 즉시 해제
+            raw_display_message = config_cache.get("ledMessage", "")
+            waiting_msg = get_decoded_message(raw_display_message) or "승차대기"
+            display_color = config_cache.get("ledFontColor", "00")
+            if detected_people_count > 0:
+                logging.info("[CAM_MOBILITY] 교통약자 이탈 확정, 사람 %d명 잔류 → 승차대기 전환",
+                             detected_people_count)
+                show_waiting_message(waiting_msg, display_color, duration=20, force_replace=True)
+            else:
+                logging.info("[CAM_MOBILITY] 교통약자 이탈 확정, 사람 없음 → 시계 전환")
+                clear_waiting_state("camera: mobility_cleared, no people")
+            return jsonify({"status": "success", "message": "mobility_cleared handled"}), 200
 
         # 인원수가 0보다 큰 경우 메시지 전송
         if detected_people_count > 0:
@@ -1186,6 +1203,7 @@ def update_count():
                 else:
                     logging.info("smartpole mode - STOP message skipped")
             elif request_source == "button" and request_message:
+                # 물리 버튼: 교통약자 갱신 (force replace)
                 button_active_until = time.time() + BUTTON_HOLD_SEC
                 _countdown = button_active_until if ENV_TYPE == "dev" else 0.0
                 show_waiting_message(display_message, display_color, duration=20, force_replace=True,
@@ -1194,11 +1212,25 @@ def update_count():
                              BUTTON_HOLD_SEC,
                              datetime.fromtimestamp(button_active_until).strftime("%H:%M:%S"),
                              display_message)
+            elif request_source == "camera_mobility" and request_message:
+                # 카메라 교통약자 감지 확정 → 현재 표시([승차대기] 포함) 강제 교체
+                logging.info("[CAM_MOBILITY] 교통약자 카메라 감지 확정 → 현재 표시 교체: '%s'",
+                             display_message)
+                show_waiting_message(display_message, display_color, duration=20, force_replace=True,
+                                     mobility_classes=request_mobility_classes)
+            elif button_active_until > 0 and time.time() >= button_active_until:
+                # 버튼 타이머 만료 후 사람 잔류 → [교통약자] → [승차대기] 전환
+                button_active_until = 0.0
+                raw_display_message = config_cache.get("ledMessage", "")
+                waiting_msg = get_decoded_message(raw_display_message) or display_message
+                waiting_color = config_cache.get("ledFontColor", "00")
+                logging.info("[BUTTON_EXPIRE] 버튼 타이머 만료, 사람 %d명 잔류 → 승차대기 전환",
+                             detected_people_count)
+                show_waiting_message(waiting_msg, waiting_color, duration=20, force_replace=True)
             else:
                 logging.info("update_count: people detected, waiting message already displayed. skip.")
 
         else:
-
             if cv_count_screen_action == 1:
                 if time.time() < button_active_until:
                     logging.info("[BUTTON] count=0 수신 → 만료까지 %.0fs 남음, 시계 전환 대기",
