@@ -169,11 +169,14 @@ MOBILITY_ALLOWED_CLASSES: set[str] = (
 logger.info(f"교통약자 감지 클래스: {MOBILITY_ALLOWED_CLASSES or '전체'}")
 
 # ── 교통약자 상태 머신 설정 ────────────────────────────────────
-# 교통약자가 화면에서 사라진 후 N 프레임 연속 미감지 시 cleared 처리
-MOBILITY_CLEAR_STREAK = int(os.getenv("MOBILITY_CLEAR_STREAK", "3"))
+# 진입: N 프레임 연속 감지 시 교통약자 상태로 전이 (기본 3프레임 ≈ 0.5s)
+MOBILITY_CONFIRM_STREAK = int(os.getenv("MOBILITY_CONFIRM_STREAK", "3"))
+# 퇴장: N 프레임 연속 미감지 시 cleared 처리 (기본 8프레임 ≈ 1.5s, 간헐 감지 대응)
+MOBILITY_CLEAR_STREAK = int(os.getenv("MOBILITY_CLEAR_STREAK", "8"))
 # STOMP 교통약자 전용 destination
 MOBILITY_STOMP_DEST = os.getenv("MOBILITY_STOMP_DEST", "/api/iot/mobility")
-_mobility_clear_counter: int = 0  # 연속 미감지 프레임 카운터
+_mobility_clear_counter: int = 0    # 연속 미감지 프레임 카운터 (퇴장 판정용)
+_mobility_confirm_counter: int = 0  # 연속 감지 프레임 카운터 (진입 판정용)
 
 API_URL = os.getenv("API_URL")
 server_url = f"{API_URL}/update_count"
@@ -1025,14 +1028,15 @@ def _handle_mobility_transition(
     state: "AppState",
     any_person_like: bool = False,
 ) -> None:
-    """교통약자 감지 상태 전이 처리.
+    """교통약자 감지 상태 전이 처리 (hysteresis 적용).
 
-    - 미감지→감지 : STOMP mobility_detected 전송 (버튼 트리거)
-    - 감지→미감지 : STOMP mobility_cleared 전송, 표시 상태 결정
-      - 사람 있음 → display=승차대기
-      - 사람 없음 → display=clock
+    진입 (미감지→교통약자):
+      MOBILITY_CONFIRM_STREAK 프레임 연속 감지 후 mobility_detected 전송
+    퇴장 (교통약자→미감지):
+      MOBILITY_CLEAR_STREAK 프레임 연속 미감지 후 mobility_cleared 전송
+      → 간헐적 감지(flickering) 시 상태가 왔다갔다하는 현상 방지
     """
-    global _mobility_clear_counter
+    global _mobility_clear_counter, _mobility_confirm_counter
 
     currently_found = len(mobility_classes) > 0
 
@@ -1045,28 +1049,47 @@ def _handle_mobility_transition(
         currently_found = False
 
     if currently_found:
-        # 연속 미감지 카운터 리셋
+        # 퇴장 카운터 리셋, 진입 카운터 증가
         _mobility_clear_counter = 0
+        _mobility_confirm_counter += 1
 
         if not state.mobility_visible:
-            # ── 미감지 → 감지 전이 ──────────────────────────
-            state.mobility_visible = True
-            payload = {
-                "terminal_id": TERMINAL_ID,
-                "type": "mobility_detected",
-                "classes": mobility_classes,
-            }
-            logger.info(f"[mobility] 교통약자 감지 → 버튼 트리거: {mobility_classes}")
-            if not SKIP_SENDS:
-                asyncio.run(send_stomp_message(MOBILITY_STOMP_DEST, payload))
-            else:
-                logger.info(f"[SKIP] STOMP 스킵 (SKIP_SENDS) mobility_detected")
+            logger.debug(
+                f"[mobility] 진입 대기 {_mobility_confirm_counter}/{MOBILITY_CONFIRM_STREAK} "
+                f"{mobility_classes}"
+            )
+            if _mobility_confirm_counter >= MOBILITY_CONFIRM_STREAK:
+                # ── 미감지 → 감지 전이 확정 ──────────────────
+                _mobility_confirm_counter = 0
+                state.mobility_visible = True
+                payload = {
+                    "terminal_id": TERMINAL_ID,
+                    "type": "mobility_detected",
+                    "classes": mobility_classes,
+                }
+                logger.info(
+                    f"[mobility] 교통약자 확정 ({MOBILITY_CONFIRM_STREAK}프레임 연속) "
+                    f"→ 버튼 트리거: {mobility_classes}"
+                )
+                if not SKIP_SENDS:
+                    asyncio.run(send_stomp_message(MOBILITY_STOMP_DEST, payload))
+                else:
+                    logger.info(f"[SKIP] STOMP 스킵 (SKIP_SENDS) mobility_detected")
+        else:
+            # 이미 교통약자 상태 — confirm 카운터만 리셋 (중복 전송 방지)
+            _mobility_confirm_counter = 0
     else:
+        # 미감지 프레임 — 진입 카운터 리셋
+        _mobility_confirm_counter = 0
+
         if state.mobility_visible:
-            # 연속 미감지 카운터 증가
+            # 퇴장 카운터 증가
             _mobility_clear_counter += 1
+            logger.debug(
+                f"[mobility] 퇴장 대기 {_mobility_clear_counter}/{MOBILITY_CLEAR_STREAK}"
+            )
             if _mobility_clear_counter >= MOBILITY_CLEAR_STREAK:
-                # ── 감지 → 미감지 전이 (확정) ────────────────
+                # ── 감지 → 미감지 전이 확정 ──────────────────
                 _mobility_clear_counter = 0
                 state.mobility_visible = False
                 person_present = len(person_boxes) > 0
@@ -1078,8 +1101,8 @@ def _handle_mobility_transition(
                     "people_count": len(person_boxes),
                 }
                 logger.info(
-                    f"[mobility] 교통약자 사라짐 → display={display} "
-                    f"(사람 {len(person_boxes)}명)"
+                    f"[mobility] 교통약자 사라짐 확정 ({MOBILITY_CLEAR_STREAK}프레임 연속 미감지) "
+                    f"→ display={display} (사람 {len(person_boxes)}명)"
                 )
                 if not SKIP_SENDS:
                     asyncio.run(send_stomp_message(MOBILITY_STOMP_DEST, payload))
